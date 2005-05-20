@@ -1,0 +1,42 @@
+2004-03-23 Vlad Seryakov vlad@crystalballinc.com
+
+	* full name compression implemented
+
+2004-03-22 Vlad Seryakov vlad@crystalballinc.com
+
+	* dnsResolved FD_ISSET bug fixed
+
+2003-11-18 Vlad Seryakov vlad@crystalballinc.com
+
+	* default host and wildcards for domains added
+
+2003-06-13 Vlad Seryakov vlad@crystalballinc.com
+
+	* another caching bug fixed
+
+2003-05-29 Vlad Seryakov vlad@crystalballinc.com
+
+	* caching bug fixed
+
+2003-05-28 Vlad Seryakov vlad@crystalballinc.com
+
+	* added round-robin rotation for multiple RRs
+
+2003-05-16 Vlad Seryakov vlad@crystalballinc.com
+
+	* another memory overflow fixed 
+
+2003-04-20 Vlad Seryakov vlad@crystalballinc.com
+
+        * Aolserver 4 support.
+
+2003-03-14 Vlad Seryakov vlad@crystalballinc.com
+
+	* nasty bug with dynamic buffer reallocation caused 
+          DNS packets corruption
+
+2003-03-06 Vlad Seryakov vlad@crystalballinc.com
+
+	* changed debugging output, added negative cache
+	* fixed bug with SOA records
+	* dns.tcl module added which loads /etc/hosts file

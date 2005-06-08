@@ -14,7 +14,7 @@ Compiling and Installing
 
 To compile this driver, just type make
 
-dns.tcl file may go to /usr/local/aolserver/modules/tcl directory
+dns.tcl file may go to /usr/local/ns/modules/tcl directory
 to be loaded on startup. It loads /etc/hosts records into DNS cache as A 
 records and will act as primary DNS server for these hosts.
 

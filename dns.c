@@ -237,7 +237,7 @@ dnsRecordDump(Ns_DString *ds,dnsRecord *y)
 {
     if(!y) return;
 
-    Ns_DStringPrintf(ds, "Name=%s, Type=%s(%d), Class=%d, TTL=%u, Length=%d, ",
+    Ns_DStringPrintf(ds, "Name=%s, Type=%s(%d), Class=%u, TTL=%lu, Length=%u, ",
                   y->name,
                   dnsTypeStr(y->type),
                   y->type,
@@ -263,13 +263,13 @@ dnsRecordDump(Ns_DString *ds,dnsRecord *y)
          break;
      case DNS_TYPE_SOA:
          if(!y->data.soa) break;
-         Ns_DStringPrintf(ds,"MNAME=%s, RNAME=%s, SERIAL=%ul, REFRESH=%ul, RETRY=%ul, EXPIRE=%ul, TTL=%ul ",
+         Ns_DStringPrintf(ds,"MNAME=%s, RNAME=%s, SERIAL=%lu, REFRESH=%lu, RETRY=%lu, EXPIRE=%lu, TTL=%lu ",
                           y->data.soa->mname,y->data.soa->rname,y->data.soa->serial,
                           y->data.soa->refresh,y->data.soa->retry,y->data.soa->expire,
                           y->data.soa->ttl);
          break;
     }
-    if(y->timestamp) Ns_DStringPrintf(ds,", TIMESTAMP=%ul",y->timestamp);
+    if(y->timestamp) Ns_DStringPrintf(ds,", TIMESTAMP=%lu",y->timestamp);
 }
 
 void

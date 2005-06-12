@@ -42,6 +42,7 @@
 #define DNS_TYPE_MX             15
 #define DNS_TYPE_TXT            16
 #define DNS_TYPE_SRV            33
+#define DNS_TYPE_NAPTR          35
 #define DNS_TYPE_ANY            255
 #define DNS_DEFAULT_TTL         (60 * 60)
 #define DNS_CLASS_INET          1
@@ -104,6 +105,16 @@ typedef struct _dnsName {
     short offset;
 } dnsName;
 
+typedef struct _dnsNA {
+    struct _dnsNA *next;
+    short order;
+    short prefs;
+    char *flags;
+    char *service;
+    char *regexp;
+    char *replace;
+} dnsNA;
+
 typedef struct _dnsRecord {
     struct _dnsRecord *next,*prev;
     char *name;
@@ -115,6 +126,7 @@ typedef struct _dnsRecord {
       char *name;
       struct in_addr ipaddr;
       dnsMX *mx;
+      dnsNA *na;
       dnsSOA *soa;
     } data;
     unsigned long timestamp;

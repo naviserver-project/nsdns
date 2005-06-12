@@ -83,7 +83,6 @@ NS_EXPORT int
 Ns_ModuleInit(char *server, char *module)
 {
     char *path, *address;
-    struct sockaddr_in addr;
 
     Ns_Log(Notice, "nsdns module version %s server: %s", VERSION,server);
 
@@ -174,11 +173,12 @@ DnsSegv(int sig)
 static int
 DnsCmd(ClientData arg,Tcl_Interp *interp,int objc,Tcl_Obj *CONST objv[])
 {
+    int cmd;
     enum commands {
         cmdAdd, cmdRemove, cmdFlush, cmdList, cmdResolve, cmdQueue, cmdLookup
-    } cmd;
+    };
 
-    static char *sCmd[] = {
+    static const char *sCmd[] = {
         "add", "del", "flush", "list", "resolve", "queue", "lookup", 0
     };
     dnsRecord *drec;

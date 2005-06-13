@@ -46,7 +46,7 @@ static int dnsRequestSend(dnsRequest *req);
 static int dnsRequestHandle(dnsRequest *req);
 static int dnsWrite(int sock, void *vbuf, int len);
 static int dnsRead(int sock, void *vbuf, int len);
-static void DnsPanic(char *fmt,...);
+static void DnsPanic(const char *fmt,...);
 static void DnsSegv(int sig);
 static int DnsCmd(ClientData arg,Tcl_Interp *interp,int objc,Tcl_Obj *CONST objv[]);
 static int DnsInterpInit(Tcl_Interp *interp, void *context);
@@ -149,12 +149,12 @@ DnsInterpInit(Tcl_Interp *interp, void *context)
 }
 
 static void
-DnsPanic(char *fmt,...)
+DnsPanic(const char *fmt,...)
 {
     va_list ap;
 
     va_start(ap,fmt);
-    Ns_Log(Error,"nsdns[%d]: panic %x",getpid(),va_arg(ap,char*));
+    Ns_Log(Error,"nsdns[%d]: panic %p",getpid(),va_arg(ap,char*));
     va_end(ap);
     close(dnsUdpSock);
     close(dnsTcpSock);

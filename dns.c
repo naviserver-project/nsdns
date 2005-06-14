@@ -434,6 +434,26 @@ dnsRecordCreateMX(char *name,int preference,char *data)
 }
 
 dnsRecord *
+dnsRecordCreateNAPTR(char *name,int order,int preference,char *flags,char *service,char *regexp,char *replace)
+{
+    dnsRecord *y = ns_calloc(1,sizeof(dnsRecord));
+    y->name = ns_strcopy(name);
+    y->type = DNS_TYPE_NAPTR;
+    y->class = DNS_CLASS_INET;
+    y->data.naptr = ns_calloc(1,sizeof(dnsMX));
+    y->data.naptr->order = order;
+    y->data.naptr->preference = preference;
+    y->data.naptr->flags = ns_strcopy(flags);
+    y->data.naptr->service = ns_strcopy(service);
+    y->data.naptr->regexp = ns_strcopy(regexp);
+    y->data.naptr->replace = ns_strcopy(replace);
+    y->len = 2;
+    if(y->data.name) y->len += strlen(y->data.name);
+    y->ttl = dnsTTL;
+    return y;
+}
+
+dnsRecord *
 dnsRecordCreateSOA(char *name,char *mname,char *rname,
                    unsigned long serial,unsigned long refresh,
                    unsigned long retry,unsigned long expire,unsigned long ttl)
@@ -474,6 +494,15 @@ dnsRecordCreateTclObj(Tcl_Interp *interp,dnsRecord *drec)
           if(!drec->data.mx) break;
           Tcl_ListObjAppendElement(interp,obj,Tcl_NewStringObj(drec->data.mx->name,-1));
           Tcl_ListObjAppendElement(interp,obj,Tcl_NewIntObj(drec->data.mx->preference));
+          break;
+       case DNS_TYPE_NAPTR:
+          if(!drec->data.naptr) break;
+          Tcl_ListObjAppendElement(interp,obj,Tcl_NewIntObj(drec->data.naptr->order));
+          Tcl_ListObjAppendElement(interp,obj,Tcl_NewIntObj(drec->data.naptr->preference));
+          Tcl_ListObjAppendElement(interp,obj,Tcl_NewStringObj(drec->data.naptr->flags,-1));
+          Tcl_ListObjAppendElement(interp,obj,Tcl_NewStringObj(drec->data.naptr->service,-1));
+          Tcl_ListObjAppendElement(interp,obj,Tcl_NewStringObj(drec->data.naptr->regexp,-1));
+          Tcl_ListObjAppendElement(interp,obj,Tcl_NewStringObj(drec->data.naptr->replace,-1));
           break;
        case DNS_TYPE_SOA:
           if(!drec->data.soa) break;
@@ -550,6 +579,21 @@ dnsRecordSearch(dnsRecord *list,dnsRecord *rec,int replace)
            if(!rec->data.mx || !rec->data.mx->name ||
               !drec->data.mx || !drec->data.mx->name) return -1;
            if(!strcmp(rec->data.mx->name,drec->data.mx->name)) {
+             if(replace) {
+               rec->ttl = drec->ttl;
+               rec->data.mx->preference = drec->data.mx->preference;
+             }
+             return 1;
+           }
+           break;
+       case DNS_TYPE_NAPTR:
+           if(!rec->data.naptr || !drec->data.naptr ||
+              (!rec->data.naptr->regexp && !rec->data.naptr->replace) ||
+              (!drec->data.naptr->regexp && !drec->data.naptr->replace)) return -1;
+           if((rec->data.naptr->regexp && drec->data.naptr->regexp &&
+               !strcmp(rec->data.naptr->regexp,drec->data.naptr->regexp)) ||
+               (rec->data.naptr->replace && drec->data.naptr->replace &&
+               !strcmp(rec->data.naptr->replace,drec->data.naptr->replace))) {
              if(replace) {
                rec->ttl = drec->ttl;
                rec->data.mx->preference = drec->data.mx->preference;
@@ -714,6 +758,25 @@ dnsParseRecord(dnsPacket *pkt,int query)
          offset = (pkt->buf.ptr - pkt->buf.data)-2;
          if(dnsParseName(pkt,&pkt->buf.ptr,name,255,0,0) < 0) goto err;
          y->data.name = ns_strdup(name);
+         break;
+     case DNS_TYPE_NAPTR:
+         y->data.naptr = ns_calloc(1,sizeof(dnsNAPTR));
+         y->data.naptr->order = ntohs(*((unsigned short*)pkt->buf.ptr));
+         pkt->buf.ptr += 2;
+         y->data.mx->preference = ntohs(*((unsigned short*)pkt->buf.ptr));
+         pkt->buf.ptr += 2;
+         /* flags */
+         if(dnsParseName(pkt,&pkt->buf.ptr,name,255,0,0) < 0) goto err;
+         y->data.naptr->flags = ns_strdup(name);
+         /* service */
+         if(dnsParseName(pkt,&pkt->buf.ptr,name,255,0,0) < 0) goto err;
+         y->data.naptr->service = ns_strdup(name);
+         /* regexp */
+         if(dnsParseName(pkt,&pkt->buf.ptr,name,255,0,0) < 0) goto err;
+         y->data.naptr->regexp = ns_strdup(name);
+         /* replace */
+         if(dnsParseName(pkt,&pkt->buf.ptr,name,255,0,0) < 0) goto err;
+         y->data.naptr->replace = ns_strdup(name);
          break;
      case DNS_TYPE_SOA:
          y->data.soa = ns_calloc(1,sizeof(dnsSOA));
@@ -909,6 +972,18 @@ dnsEncodeRecord(dnsPacket *pkt,dnsRecord *list)
        case DNS_TYPE_PTR:
            dnsEncodeName(pkt,list->data.name);
            break;
+       case DNS_TYPE_NAPTR:
+           dnsEncodeShort(pkt,list->data.naptr->order);
+           dnsEncodeShort(pkt,list->data.naptr->preference);
+           dnsEncodeGrow(pkt,64,"pkt:naptr");
+           dnsEncodeName(pkt,list->data.naptr->flags);
+           dnsEncodeGrow(pkt,64,"pkt:naptr");
+           dnsEncodeName(pkt,list->data.naptr->service);
+           dnsEncodeGrow(pkt,64,"pkt:naptr");
+           dnsEncodeName(pkt,list->data.naptr->regexp);
+           dnsEncodeGrow(pkt,64,"pkt:naptr");
+           dnsEncodeName(pkt,list->data.naptr->replace);
+           break;
       }
       dnsEncodeEnd(pkt);
     }
@@ -1061,6 +1136,7 @@ dnsTypeStr(int type)
            type == DNS_TYPE_SOA ? "SOA" :
            type == DNS_TYPE_PTR ? "PTR" :
            type == DNS_TYPE_MX ? "MX" :
+           type == DNS_TYPE_NAPTR ? "NAPTR" :
            type == DNS_TYPE_ANY ? "ANY" : "unknown";
 }
 
@@ -1073,6 +1149,7 @@ dnsType(char *type)
     if(!strcasecmp(type,"CNAME")) return DNS_TYPE_CNAME;
     if(!strcasecmp(type,"SOA")) return DNS_TYPE_SOA;
     if(!strcasecmp(type,"PTR")) return DNS_TYPE_PTR;
+    if(!strcasecmp(type,"NAPTR")) return DNS_TYPE_NAPTR;
     if(!strcasecmp(type,"MX")) return DNS_TYPE_MX;
     return -1;
 }

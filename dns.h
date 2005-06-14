@@ -83,6 +83,7 @@
 
 #define DNS_BUF_SIZE            1524
 #define DNS_REPLY_SIZE          514
+#define DNS_QUEUE_SIZE          16
 
 typedef struct _dnsSOA {
     char *mname;
@@ -105,15 +106,15 @@ typedef struct _dnsName {
     short offset;
 } dnsName;
 
-typedef struct _dnsNA {
+typedef struct _dnsNAPTR {
     struct _dnsNA *next;
     short order;
-    short prefs;
+    short preference;
     char *flags;
     char *service;
     char *regexp;
     char *replace;
-} dnsNA;
+} dnsNAPTR;
 
 typedef struct _dnsRecord {
     struct _dnsRecord *next,*prev;
@@ -126,7 +127,7 @@ typedef struct _dnsRecord {
       char *name;
       struct in_addr ipaddr;
       dnsMX *mx;
-      dnsNA *na;
+      dnsNAPTR *naptr;
       dnsSOA *soa;
     } data;
     unsigned long timestamp;
@@ -173,6 +174,8 @@ dnsRecord *dnsRecordCreateMX(char *name,int preference,char *data);
 dnsRecord *dnsRecordCreateSOA(char *name,char *mname,char *rname,
                               unsigned long serial,unsigned long refresh,
                               unsigned long retry,unsigned long expire,unsigned long ttl);
+dnsRecord *dnsRecordCreateNAPTR(char *name,int order,int preference,char *flags,
+                                char *service,char *regexp,char *replace);
 Tcl_Obj *dnsRecordCreateTclObj(Tcl_Interp *interp,dnsRecord *drec);
 dnsRecord *dnsRecordAppend(dnsRecord **list,dnsRecord *pkt);
 dnsRecord *dnsRecordRemove(dnsRecord **list,dnsRecord *link);

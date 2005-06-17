@@ -468,8 +468,8 @@ dnsRecordCreateNAPTR(char *name,int order,int preference,char *flags,char *servi
     y->data.naptr->preference = preference;
     y->data.naptr->flags = ns_strcopy(flags);
     y->data.naptr->service = ns_strcopy(service);
-    y->data.naptr->regexp = ns_strcopy(regexp);
-    y->data.naptr->replace = ns_strcopy(replace);
+    y->data.naptr->regexp = ns_strcopy(regexp ? regexp : "");
+    y->data.naptr->replace = ns_strcopy(replace ? replace : "");
     y->len = 2;
     if(y->data.name) y->len += strlen(y->data.name);
     y->ttl = dnsTTL;
@@ -870,7 +870,7 @@ err:
 }
 
 void
-dnsEncodeName(dnsPacket *pkt,char *name)
+dnsEncodeName(dnsPacket *pkt,char *name,int compress)
 {
     dnsName *nm;
     unsigned int c;
@@ -882,7 +882,7 @@ dnsEncodeName(dnsPacket *pkt,char *name)
         for(len = 0;(c = name[k+len]) != 0 && c != '.';len++);
         if(!len || len > 63) break;
         // Find already saved domain name
-        for(nm = pkt->nmlist;nm;nm = nm->next) {
+        for(nm = pkt->nmlist;compress && nm;nm = nm->next) {
           if(!strcasecmp(nm->name,&name[k])) {
             dnsEncodePtr(pkt,nm->offset);
             return;
@@ -947,6 +947,18 @@ dnsEncodeData(dnsPacket *pkt,void *ptr,int len)
 }
 
 void
+dnsEncodeString(dnsPacket *pkt,char *str)
+{
+    int len = str ? strlen(str) : 0;
+    *((unsigned short*)pkt->buf.ptr) = len;
+    pkt->buf.ptr++;
+    if(len) {
+      memcpy(pkt->buf.ptr,str,(unsigned)len);
+      pkt->buf.ptr += len;
+    }
+}
+
+void
 dnsEncodeBegin(dnsPacket *pkt)
 {
     // Mark offset where the record begins
@@ -966,7 +978,7 @@ dnsEncodeRecord(dnsPacket *pkt,dnsRecord *list)
 {
     dnsEncodeGrow(pkt,12,"pkt:hdr");
     for(;list;list = list->next) {
-      dnsEncodeName(pkt,list->name);
+      dnsEncodeName(pkt,list->name,1);
       dnsEncodeGrow(pkt,16,"pkt:data");
       dnsEncodeShort(pkt,list->type);
       dnsEncodeShort(pkt,list->class);
@@ -978,11 +990,11 @@ dnsEncodeRecord(dnsPacket *pkt,dnsRecord *list)
            break;
        case DNS_TYPE_MX:
            dnsEncodeShort(pkt,list->data.mx->preference);
-           dnsEncodeName(pkt,list->data.mx->name);
+           dnsEncodeName(pkt,list->data.mx->name,1);
            break;
        case DNS_TYPE_SOA:
-           dnsEncodeName(pkt,list->data.soa->mname);
-           dnsEncodeName(pkt,list->data.soa->rname);
+           dnsEncodeName(pkt,list->data.soa->mname,1);
+           dnsEncodeName(pkt,list->data.soa->rname,1);
            dnsEncodeGrow(pkt,20,"pkt:soa");
            dnsEncodeLong(pkt,list->data.soa->serial);
            dnsEncodeLong(pkt,list->data.soa->refresh);
@@ -993,19 +1005,15 @@ dnsEncodeRecord(dnsPacket *pkt,dnsRecord *list)
        case DNS_TYPE_NS:
        case DNS_TYPE_CNAME:
        case DNS_TYPE_PTR:
-           dnsEncodeName(pkt,list->data.name);
+           dnsEncodeName(pkt,list->data.name,1);
            break;
        case DNS_TYPE_NAPTR:
            dnsEncodeShort(pkt,list->data.naptr->order);
            dnsEncodeShort(pkt,list->data.naptr->preference);
-           dnsEncodeGrow(pkt,64,"pkt:naptr");
-           dnsEncodeName(pkt,list->data.naptr->flags);
-           dnsEncodeGrow(pkt,64,"pkt:naptr");
-           dnsEncodeName(pkt,list->data.naptr->service);
-           dnsEncodeGrow(pkt,64,"pkt:naptr");
-           dnsEncodeName(pkt,list->data.naptr->regexp);
-           dnsEncodeGrow(pkt,64,"pkt:naptr");
-           dnsEncodeName(pkt,list->data.naptr->replace);
+           dnsEncodeString(pkt,list->data.naptr->flags);
+           dnsEncodeString(pkt,list->data.naptr->service);
+           dnsEncodeString(pkt,list->data.naptr->regexp);
+           dnsEncodeName(pkt,list->data.naptr->replace,0);
            break;
       }
       dnsEncodeEnd(pkt);
@@ -1017,7 +1025,7 @@ dnsEncodePacket(dnsPacket *pkt)
 {
     pkt->buf.ptr = &pkt->buf.data[DNS_HEADER_LEN+2];
     /* Encode query part */
-    dnsEncodeName(pkt,pkt->qdlist->name);
+    dnsEncodeName(pkt,pkt->qdlist->name,1);
     dnsEncodeShort(pkt,pkt->qdlist->type);
     dnsEncodeShort(pkt,pkt->qdlist->class);
     /* Encode answer records */

@@ -107,7 +107,7 @@ typedef struct _dnsName {
 } dnsName;
 
 typedef struct _dnsNAPTR {
-    struct _dnsNA *next;
+    struct _dnsNAPTR *next;
     short order;
     short preference;
     char *flags;
@@ -183,13 +183,14 @@ dnsPacket *dnsParseHeader(void *packet,int size);
 dnsRecord *dnsParseRecord(dnsPacket *pkt,int query);
 dnsPacket *dnsParsePacket(unsigned char *packet,int size);
 int dnsParseName(dnsPacket *pkt,char **ptr,char *buf,int len,int pos,int level);
-void dnsEncodeName(dnsPacket *pkt,char *name);
+void dnsEncodeName(dnsPacket *pkt,char *name,int compress);
 void dnsEncodeGrow(dnsPacket *pkt,unsigned int size,char *proc);
 void dnsEncodeHeader(dnsPacket *pkt);
 void dnsEncodePtr(dnsPacket *pkt,int offset);
 void dnsEncodeShort(dnsPacket *pkt,int num);
 void dnsEncodeLong(dnsPacket *pkt,unsigned long num);
 void dnsEncodeData(dnsPacket *pkt,void *ptr,int len);
+void dnsEncodeString(dnsPacket *pkt,char *str);
 void dnsEncodeObj(dnsPacket *pkt);
 void dnsEncodeBegin(dnsPacket *pkt);
 void dnsEncodeEnd(dnsPacket *pkt);

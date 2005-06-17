@@ -183,6 +183,7 @@ dnsPacket *dnsParseHeader(void *packet,int size);
 dnsRecord *dnsParseRecord(dnsPacket *pkt,int query);
 dnsPacket *dnsParsePacket(unsigned char *packet,int size);
 int dnsParseName(dnsPacket *pkt,char **ptr,char *buf,int len,int pos,int level);
+int dnsParseString(dnsPacket *pkt,char **buf);
 void dnsEncodeName(dnsPacket *pkt,char *name,int compress);
 void dnsEncodeGrow(dnsPacket *pkt,unsigned int size,char *proc);
 void dnsEncodeHeader(dnsPacket *pkt);

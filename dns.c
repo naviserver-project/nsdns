@@ -468,8 +468,8 @@ dnsRecordCreateNAPTR(char *name,int order,int preference,char *flags,char *servi
     y->data.naptr->preference = preference;
     y->data.naptr->flags = ns_strcopy(flags);
     y->data.naptr->service = ns_strcopy(service);
-    y->data.naptr->regexp = ns_strcopy(regexp ? regexp : "");
-    y->data.naptr->replace = ns_strcopy(replace ? replace : "");
+    y->data.naptr->regexp = ns_strcopy(regexp && *regexp ? regexp : 0);
+    y->data.naptr->replace = ns_strcopy(replace && *replace ? replace : 0);
     y->len = 2;
     if(y->data.name) y->len += strlen(y->data.name);
     y->ttl = dnsTTL;
@@ -650,6 +650,20 @@ dnsRecordSearch(dnsRecord *list,dnsRecord *rec,int replace)
 }
 
 int
+dnsParseString(dnsPacket *pkt,char **buf)
+{
+    int len;
+
+    if(!(len = *pkt->buf.ptr++)) return 0;
+    if(pkt->buf.ptr+len > pkt->buf.data+pkt->buf.allocated) return -1;  
+    *buf = ns_malloc(len+1);
+    strncpy(*buf,pkt->buf.ptr,len);
+    (*buf)[len] = 0;
+    pkt->buf.ptr += len;
+    return 0;
+}
+
+int
 dnsParseName(dnsPacket *pkt,char **ptr,char *buf,int buflen,int pos,int level)
 {
     unsigned short i,len,offset;
@@ -789,14 +803,20 @@ dnsParseRecord(dnsPacket *pkt,int query)
          y->data.mx->preference = ntohs(*((unsigned short*)pkt->buf.ptr));
          pkt->buf.ptr += 2;
          /* flags */
-         if(dnsParseName(pkt,&pkt->buf.ptr,name,255,0,0) < 0) goto err;
-         y->data.naptr->flags = ns_strdup(name);
+         if(dnsParseString(pkt,&y->data.naptr->flags) < 0) {
+           strcpy(name,"invalid NAPTR flags len");
+           goto err;
+         }
          /* service */
-         if(dnsParseName(pkt,&pkt->buf.ptr,name,255,0,0) < 0) goto err;
-         y->data.naptr->service = ns_strdup(name);
+         if(dnsParseString(pkt,&y->data.naptr->service) < 0) {
+           strcpy(name,"invalid NAPTR service len");
+           goto err;
+         }
          /* regexp */
-         if(dnsParseName(pkt,&pkt->buf.ptr,name,255,0,0) < 0) goto err;
-         y->data.naptr->regexp = ns_strdup(name);
+         if(dnsParseString(pkt,&y->data.naptr->regexp) < 0) {
+           strcpy(name,"invalid NAPTR regexp len");
+           goto err;
+         }
          /* replace */
          if(dnsParseName(pkt,&pkt->buf.ptr,name,255,0,0) < 0) goto err;
          y->data.naptr->replace = ns_strdup(name);

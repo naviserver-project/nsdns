@@ -268,6 +268,12 @@ dnsRecordDump(Ns_DString *ds,dnsRecord *y)
                           y->data.soa->refresh,y->data.soa->retry,y->data.soa->expire,
                           y->data.soa->ttl);
          break;
+     case DNS_TYPE_NAPTR:
+         if(!y->data.naptr) break;
+         Ns_DStringPrintf(ds,"ORDER=%d, PREFS=%d, FLAGS=%s, SERVICE=%s, REGEXP=%s, REPLACE=%s, TTL=%lu ",
+                          y->data.naptr->order,y->data.naptr->preference,y->data.naptr->flags,y->data.naptr->service,
+                          y->data.naptr->regexp,y->data.naptr->replace,y->data.soa->ttl);
+         break;
     }
     if(y->timestamp) Ns_DStringPrintf(ds,", TIMESTAMP=%lu",y->timestamp);
 }
@@ -302,6 +308,13 @@ dnsRecordFree(dnsRecord *pkt)
      case DNS_TYPE_CNAME:
      case DNS_TYPE_PTR:
          ns_free(pkt->data.name);
+         break;
+     case DNS_TYPE_NAPTR:
+         if(!pkt->data.naptr) break;
+         ns_free(pkt->data.naptr->flags);
+         ns_free(pkt->data.naptr->service);
+         ns_free(pkt->data.naptr->regexp);
+         ns_free(pkt->data.naptr->replace);
          break;
      case DNS_TYPE_SOA:
          if(!pkt->data.soa) break;
@@ -348,6 +361,16 @@ dnsRecordCreate(dnsRecord *from)
        case DNS_TYPE_CNAME:
        case DNS_TYPE_PTR:
            rec->data.name = ns_strcopy(from->data.name);
+           break;
+       case DNS_TYPE_NAPTR:
+           rec->data.naptr = ns_calloc(1,sizeof(dnsNAPTR));
+           if(!from->data.naptr) break;
+           rec->data.naptr->order = from->data.naptr->order;
+           rec->data.naptr->preference = from->data.naptr->preference;
+           rec->data.naptr->flags = ns_strcopy(from->data.naptr->flags);
+           rec->data.naptr->service = ns_strcopy(from->data.naptr->service);
+           rec->data.naptr->regexp = ns_strcopy(from->data.naptr->regexp);
+           rec->data.naptr->replace = ns_strcopy(from->data.naptr->replace);
            break;
        case DNS_TYPE_SOA:
            rec->data.soa = ns_calloc(1,sizeof(dnsSOA));

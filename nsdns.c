@@ -243,7 +243,8 @@ DnsCmd(ClientData arg,Tcl_Interp *interp,int objc,Tcl_Obj *CONST objv[])
         for(n = 0,r = 0,i = 0;i < dnsThreads;i++) {
           n += dnsQueues[i].size;
           r += dnsQueues[i].requests;
-          sprintf(tmp,"size%d %lu maxsize%d %lu time%d %lu requests%d %lu ",i,dnsQueues[i].size,i,dnsQueues[i].maxsize,i,dnsQueues[i].time,i,dnsQueues[i].requests);
+          sprintf(tmp,"size%d %lu maxsize%d %lu time%d %lu requests%d %lu ",
+                  i,dnsQueues[i].size,i,dnsQueues[i].maxsize,i,dnsQueues[i].time,i,dnsQueues[i].requests);
           Tcl_AppendResult(interp, tmp, 0);
         }
         sprintf(tmp,"total %lu requests %lu",n,r);
@@ -265,16 +266,20 @@ DnsCmd(ClientData arg,Tcl_Interp *interp,int objc,Tcl_Obj *CONST objv[])
                Tcl_WrongNumArgs(interp,2,objv,"name type preference value ?ttl?");
                return TCL_ERROR;
              }
-             drec = dnsRecordCreateMX(Tcl_GetString(objv[2]),atoi(Tcl_GetString(objv[4])),Tcl_GetString(objv[5]));
+             drec = dnsRecordCreateMX(Tcl_GetString(objv[2]),atoi(Tcl_GetString(objv[4])),
+                                      Tcl_GetString(objv[5]));
              if(objc > 6) drec->ttl = atoi(Tcl_GetString(objv[6]));
              break;
          case DNS_TYPE_NAPTR:
-             if(objc < 10) {
-               Tcl_WrongNumArgs(interp,2,objv,"name type order preference flags service regexp replace ?ttl?");
+             if(objc < 9) {
+               Tcl_WrongNumArgs(interp,2,objv,"name type order preference flags service regexp ?replace? ?ttl?");
                return TCL_ERROR;
              }
-             drec = dnsRecordCreateNAPTR(Tcl_GetString(objv[2]),atoi(Tcl_GetString(objv[4])),atoi(Tcl_GetString(objv[5])),
-                                         Tcl_GetString(objv[6]),Tcl_GetString(objv[7]),Tcl_GetString(objv[8]),Tcl_GetString(objv[9]));
+             drec = dnsRecordCreateNAPTR(Tcl_GetString(objv[2]),atoi(Tcl_GetString(objv[4])),
+                                         atoi(Tcl_GetString(objv[5])),
+                                         Tcl_GetString(objv[6]),Tcl_GetString(objv[7]),
+                                         Tcl_GetString(objv[8]),
+                                         objc > 9 ? Tcl_GetString(objv[9]) : 0);
              if(objc > 10) drec->ttl = atoi(Tcl_GetString(objv[10]));
              break;
          case DNS_TYPE_NS:

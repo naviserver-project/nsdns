@@ -65,6 +65,7 @@ Usage
          A - IP address
          MX - preference cname
          NS,PTR,CNAME - domain name
+         NAPTR - naming authority (ENUM)
        
        Example:
           ns_dns add www.mydomain.com A 192.168.1.1
@@ -72,6 +73,7 @@ Usage
           ns_dns add ftp.mydomain.com CNAME www.mydomain.com
           ns_dns add mydomain.com NS ns.mydomain.com
           ns_dns add mydomain.com MX 1 ns.mydomain.com
+          ns_dns add 1.2.3.4.5.6.e164.arpa NAPTR 1 100 u E2U+sip {!^.*$!sip:123456@sipproxy.net:5060!}
 
      ns_dns del name type ?value?
 

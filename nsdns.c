@@ -46,6 +46,8 @@ typedef struct _dnsRequest {
    unsigned short proxy_id;
    unsigned short proxy_count;
    unsigned long proxy_time;
+   struct timeval recv_time;
+   struct timeval start_time;
    char buffer[DNS_BUF_SIZE];
    int size;
 } dnsRequest;
@@ -57,7 +59,8 @@ typedef struct _dnsQueue {
    unsigned long size;
    unsigned long maxsize;
    unsigned long requests;
-   unsigned long time;
+   unsigned long rtime;
+   unsigned long wtime;
    struct _dnsRequest *head;
    struct _dnsRequest *tail;
    struct _dnsRequest *freelist;
@@ -437,8 +440,10 @@ DnsCmd(ClientData arg,Tcl_Interp *interp,int objc,Tcl_Obj *CONST objv[])
         for(n = 0,r = 0,i = 0;i < dnsThreads;i++) {
           n += dnsQueues[i].size;
           r += dnsQueues[i].requests;
-          sprintf(tmp,"size%d %lu maxsize%d %lu time%d %lu requests%d %lu ",
-                  i,dnsQueues[i].size,i,dnsQueues[i].maxsize,i,dnsQueues[i].time,i,dnsQueues[i].requests);
+          sprintf(tmp,"size%d %lu maxsize%d %lu rtime%d %lu wtime%d %lu requests%d %lu ",
+                  i,dnsQueues[i].size,i,dnsQueues[i].maxsize,
+                  i,dnsQueues[i].rtime,i,dnsQueues[i].wtime,
+                  i,dnsQueues[i].requests);
           Tcl_AppendResult(interp, tmp, 0);
         }
         sprintf(tmp,"total %lu requests %lu",n,r);
@@ -610,6 +615,7 @@ DnsQueueListenThread(void *arg)
 {
     int len = sizeof(struct sockaddr_in);
     dnsRequest *req, buf;
+    struct timeval recv_time;
     int id = 0;
 
     Ns_ThreadSetName("nsdns:thread");
@@ -620,6 +626,7 @@ DnsQueueListenThread(void *arg)
         continue;
       }
       buf.buffer[buf.size] = 0;
+      gettimeofday(&recv_time,0);
       if(dnsDebug > 0) {
         Ns_Log(Debug,"nsdns: received %d bytes from %s",buf.size,ns_inet_ntoa(buf.addr.sin_addr));
       }
@@ -630,6 +637,7 @@ DnsQueueListenThread(void *arg)
       if((req = dnsQueues[id].freelist)) dnsQueues[id].freelist = req->next;
       if(!req) req = ns_calloc(1,sizeof(dnsRequest));
       memcpy(req,&buf,sizeof(buf));
+      req->recv_time = recv_time;
       if(dnsQueues[id].tail) dnsQueues[id].tail->next = req;
       dnsQueues[id].tail = req;
       if(!dnsQueues[id].head) dnsQueues[id].head = req;
@@ -648,7 +656,7 @@ DnsQueueRequestThread(void *arg)
     dnsQueue *queue;
     dnsRequest *req;
     unsigned long t0;
-    struct timeval t1,t2;
+    struct timeval end_time;
 
     queue = (dnsQueue*)arg;
     sprintf(buf, "nsdns:queue:%d", queue->id);
@@ -662,7 +670,6 @@ DnsQueueRequestThread(void *arg)
       while (!queue->head) {
         Ns_CondWait(&queue->cond, &queue->lock);
       }
-      gettimeofday(&t1,0);
       /*
        *  Unlink first job from the queue
        */
@@ -672,6 +679,7 @@ DnsQueueRequestThread(void *arg)
       if(queue->size > queue->maxsize) queue->maxsize = queue->size;
       queue->size--;
       Ns_MutexUnlock(&queue->lock);
+      gettimeofday(&req->start_time,0);
       req->sock = dnsUdpSock;
       // Allocate request structure
       if((req->req = dnsParsePacket(req->buffer,req->size))) {
@@ -690,16 +698,19 @@ DnsQueueRequestThread(void *arg)
             break;
         }
       }
+      Ns_MutexLock(&queue->lock);
       // Put request structure back if not handled by proxy
       if(req) {
         req->next = queue->freelist;
         queue->freelist = req;
       }
-      Ns_MutexLock(&queue->lock);
       Ns_CondBroadcast(&queue->cond);
-      gettimeofday(&t2,0);
-      t0 = ((t2.tv_sec - t1.tv_sec)*1000000 + (t2.tv_usec - t1.tv_usec))/1000;
-      if(t0 > queue->time) queue->time = t0;
+      gettimeofday(&end_time,0);
+      // Update statistics, in milliseconds
+      t0 = ((end_time.tv_sec - req->start_time.tv_sec)*1000 + (end_time.tv_usec - req->start_time.tv_usec))/1000;
+      if(t0 > queue->rtime) queue->rtime = t0;
+      t0 = ((req->start_time.tv_sec - req->recv_time.tv_sec)*1000 + (req->start_time.tv_usec - req->recv_time.tv_usec))/1000;
+      if(t0 > queue->wtime) queue->wtime = t0;
     }
 }
 

@@ -161,7 +161,7 @@ extern int dnsTTL;
 int dnsType(char *type);
 const char *dnsTypeStr(int type);
 void dnsRecordDump(Ns_DString *ds,dnsRecord *y);
-void dnsRecordLog(dnsRecord *rec,int level,char *text);
+void dnsRecordLog(dnsRecord *rec,int level,char *text, ...);
 void dnsRecordFree(dnsRecord *pkt);
 void dnsRecordDestroy(dnsRecord **pkt);
 int dnsRecordSearch(dnsRecord *list,dnsRecord *rec,int replace);
@@ -199,7 +199,7 @@ void dnsEncodeRecord(dnsPacket *pkt,dnsRecord *list);
 void dnsEncodePacket(dnsPacket *pkt);
 dnsPacket *dnsPacketCreateReply(dnsPacket *req);
 dnsPacket *dnsPacketCreateQuery(char *name,int type);
-void dnsPacketLog(dnsPacket *pkt,int level,char *text);
+void dnsPacketLog(dnsPacket *pkt,int level,char *text, ...);
 void dnsPacketFree(dnsPacket *pkt,int type);
 int dnsPacketAddRecord(dnsPacket *pkt,dnsRecord **list,short *count,dnsRecord *rec);
 

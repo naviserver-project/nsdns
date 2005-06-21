@@ -1,3 +1,7 @@
+2005-06-20 Vlad Seryakov vlad@crystalballinc.com
+
+	* re-strcutured for multiple clients
+
 2005-06-16 Vlad Seryakov vlad@crystalballinc.com
 
 	* NAPTR record support

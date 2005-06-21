@@ -279,17 +279,21 @@ dnsRecordDump(Ns_DString *ds,dnsRecord *y)
 }
 
 void
-dnsRecordLog(dnsRecord *rec,int level,char *text)
+dnsRecordLog(dnsRecord *rec,int level,char *text, ...)
 {
     Ns_DString ds;
+    va_list ap;
 
     if(level > dnsDebug) return;
+    va_start(ap, text);
 
     Ns_DStringInit(&ds);
-    Ns_DStringPrintf(&ds,"nsdns: %s ",text);
+    Ns_DStringAppend(&ds, "nsdns: ");
+    Ns_DStringVPrintf(&ds,text, ap);
     dnsRecordDump(&ds,rec);
     Ns_Log(level < 0 ? Error : Debug,ds.string);
     Ns_DStringFree(&ds);
+    va_end(ap);
 }
 
 void
@@ -1112,15 +1116,20 @@ dnsPacketCreateQuery(char *name,int type)
 }
 
 void
-dnsPacketLog(dnsPacket *pkt,int level,char *text)
+dnsPacketLog(dnsPacket *pkt,int level,char *text, ...)
 {
     dnsRecord *y;
     Ns_DString ds;
+    va_list ap;
 
     if(level > dnsDebug) return;
 
+    if(level > dnsDebug) return;
+    va_start(ap, text);
+
     Ns_DStringInit(&ds);
-    Ns_DStringPrintf(&ds,"nsdns: %s ",text);
+    Ns_DStringPrintf(&ds,"nsdns: ");
+    Ns_DStringVPrintf(&ds,text, ap);
     Ns_DStringPrintf(&ds," HEADER: [%04X] ID=%u, OP=%d, QR=%d, AA=%d, RD=%d, RA=%d, TC=%d, RCODE=%d, "
                       "QUERY=%u, ANSWER=%u, NS=%u, ADDITIONAL=%u, LEN=%d",
                       pkt->u,

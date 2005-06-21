@@ -550,7 +550,7 @@ DnsQueueListenThread(void *arg)
       if(++dnsQueues[id].size > dnsQueues[id].maxsize)
         dnsQueues[id].maxsize = dnsQueues[id].size;
       dnsQueues[id].requests++;
-      Ns_CondSignal(&dnsQueues[id].cond);
+      Ns_CondBroadcast(&dnsQueues[id].cond);
       Ns_MutexUnlock(&dnsQueues[id].lock);
       if(++id >= dnsThreads) id = 0;
     }
@@ -562,7 +562,7 @@ DnsQueueRequestThread(void *arg)
     char buf[32];
     dnsQueue *queue;
     dnsRequest *req;
-    unsigned long t0;
+    unsigned long rt,wt;
     struct timeval end_time;
 
     queue = (dnsQueue*)arg;
@@ -604,19 +604,18 @@ DnsQueueRequestThread(void *arg)
             break;
         }
       }
+      // Update statistics, in milliseconds
+      gettimeofday(&end_time,0);
+      rt = (end_time.tv_sec - req->start_time.tv_sec)*1000 + (end_time.tv_usec - req->start_time.tv_usec)/1000;
+      wt = (req->start_time.tv_sec - req->recv_time.tv_sec)*1000 + (req->start_time.tv_usec - req->recv_time.tv_usec)/1000;
       Ns_MutexLock(&queue->lock);
       // Put request structure back if not handled by proxy
       if(req) {
         req->next = queue->freelist;
         queue->freelist = req;
       }
-      Ns_CondSignal(&queue->cond);
-      gettimeofday(&end_time,0);
-      // Update statistics, in milliseconds
-      t0 = ((end_time.tv_sec - req->start_time.tv_sec)*1000 + (end_time.tv_usec - req->start_time.tv_usec))/1000;
-      if(t0 > queue->rtime) queue->rtime = t0;
-      t0 = ((req->start_time.tv_sec - req->recv_time.tv_sec)*1000 + (req->start_time.tv_usec - req->recv_time.tv_usec))/1000;
-      if(t0 > queue->wtime) queue->wtime = t0;
+      if(rt > queue->rtime) queue->rtime = rt;
+      if(wt > queue->wtime) queue->wtime = wt;
     }
 }
 

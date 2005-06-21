@@ -1019,6 +1019,7 @@ DnsClientCreate(char *host)
 static dnsClient *
 DnsClientFind(char *host,struct in_addr addr)
 {
+    dnsClient_t *client;
     Tcl_HashEntry *entry;
 
     if (host && DnsClientResolve(host,&addr) == NS_ERROR) {
@@ -1028,7 +1029,11 @@ DnsClientFind(char *host,struct in_addr addr)
     Ns_RWLockRdLock(&dnsClientLock);
     entry = Tcl_FindHashEntry(&dnsClientList,(char*)addr.s_addr);
     Ns_RWLockUnlock(&dnsClientLock);
-    if (entry) return Tcl_GetHashValue(entry);
+    if (entry) {
+      client = Tcl_GetHashValue(entry);
+      if(client->link) client = client->link;
+      return client;
+    }
     return &dnsClientDflt;
 }
 

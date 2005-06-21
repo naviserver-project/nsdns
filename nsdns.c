@@ -1019,7 +1019,7 @@ DnsClientCreate(char *host)
 static dnsClient *
 DnsClientFind(char *host,struct in_addr addr)
 {
-    dnsClient_t *client;
+    dnsClient *client;
     Tcl_HashEntry *entry;
 
     if (host && DnsClientResolve(host,&addr) == NS_ERROR) {

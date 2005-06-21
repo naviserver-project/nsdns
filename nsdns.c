@@ -127,6 +127,7 @@ Ns_ModuleInit(char *server, char *module)
     strcpy(dnsClientDflt.ipaddr,"0.0.0.0");
     Ns_RWLockInit(&dnsClientDflt.lock);
     Tcl_InitHashTable(&dnsClientDflt.list,TCL_STRING_KEYS);
+    memset(&dnsQueues,0,sizeof(dnsQueues));
 
     path = Ns_ConfigGetPath(server,module,NULL);
     address = Ns_ConfigGet(path,"address");
@@ -516,6 +517,168 @@ DnsCmd(ClientData arg,Tcl_Interp *interp,int objc,Tcl_Obj *CONST objv[])
 }
 
 static void
+DnsQueueListenThread(void *arg)
+{
+    int len = sizeof(struct sockaddr_in);
+    dnsRequest *req, buf;
+    struct timeval recv_time;
+    int id = 0;
+
+    Ns_ThreadSetName("nsdns:thread");
+
+    while(1) {
+      if ((buf.size = recvfrom(dnsUdpSock,buf.buffer,DNS_BUF_SIZE-1,0,(struct sockaddr*)&buf.addr,&len)) <= 0) {
+        Ns_Log(Error,"nsdns: recvfrom error: %s",strerror(errno));
+        continue;
+      }
+      buf.buffer[buf.size] = 0;
+      gettimeofday(&recv_time,0);
+      if(dnsDebug > 0) {
+        Ns_Log(Debug,"nsdns: received %d bytes from %s",buf.size,ns_inet_ntoa(buf.addr.sin_addr));
+      }
+      /*
+       *  Link new job into the queue
+       */
+      Ns_MutexLock(&dnsQueues[id].lock);
+      if((req = dnsQueues[id].freelist)) dnsQueues[id].freelist = req->next;
+      if(!req) req = ns_calloc(1,sizeof(dnsRequest));
+      memcpy(req,&buf,sizeof(buf));
+      req->recv_time = recv_time;
+      if(dnsQueues[id].tail) dnsQueues[id].tail->next = req;
+      dnsQueues[id].tail = req;
+      if(!dnsQueues[id].head) dnsQueues[id].head = req;
+      if(++dnsQueues[id].size > dnsQueues[id].maxsize)
+        dnsQueues[id].maxsize = dnsQueues[id].size;
+      dnsQueues[id].requests++;
+      Ns_CondSignal(&dnsQueues[id].cond);
+      Ns_MutexUnlock(&dnsQueues[id].lock);
+      if(++id >= dnsThreads) id = 0;
+    }
+}
+
+static void
+DnsQueueRequestThread(void *arg)
+{
+    char buf[32];
+    dnsQueue *queue;
+    dnsRequest *req;
+    unsigned long t0;
+    struct timeval end_time;
+
+    queue = (dnsQueue*)arg;
+    sprintf(buf, "nsdns:queue:%d", queue->id);
+    Ns_Log(Notice, "Starting thread: %s", buf);
+    Ns_ThreadSetName(buf);
+
+    Ns_MutexInit(&queue->lock);
+    Ns_MutexSetName(&queue->lock,buf);
+    Ns_MutexLock(&queue->lock);
+    while (1) {
+      while (!queue->head) {
+        Ns_CondWait(&queue->cond, &queue->lock);
+      }
+      /*
+       *  Unlink first job from the queue
+       */
+      req = queue->head;
+      queue->head = req->next;
+      if(queue->tail == req) queue->tail = 0;
+      queue->size--;
+      Ns_MutexUnlock(&queue->lock);
+      gettimeofday(&req->start_time,0);
+      req->sock = dnsUdpSock;
+      // Allocate request structure
+      if((req->req = dnsParsePacket(req->buffer,req->size))) {
+        // Prepare reply header
+        req->reply = dnsPacketCreateReply(req->req);
+        req->client = DnsClientFind(0,req->addr.sin_addr);
+        switch(dnsRequestHandle(req)) {
+         case 1:
+            // Proxy will handle request
+            req = 0;
+            break;
+         case 0:
+            dnsRequestSend(req);
+            dnsPacketFree(req->req,3);
+            dnsPacketFree(req->reply,4);
+            break;
+        }
+      }
+      Ns_MutexLock(&queue->lock);
+      // Put request structure back if not handled by proxy
+      if(req) {
+        req->next = queue->freelist;
+        queue->freelist = req;
+      }
+      Ns_CondSignal(&queue->cond);
+      gettimeofday(&end_time,0);
+      // Update statistics, in milliseconds
+      t0 = ((end_time.tv_sec - req->start_time.tv_sec)*1000 + (end_time.tv_usec - req->start_time.tv_usec))/1000;
+      if(t0 > queue->rtime) queue->rtime = t0;
+      t0 = ((req->start_time.tv_sec - req->recv_time.tv_sec)*1000 + (req->start_time.tv_usec - req->recv_time.tv_usec))/1000;
+      if(t0 > queue->wtime) queue->wtime = t0;
+    }
+}
+
+static int
+DnsTcpListen(SOCKET sock,void *si,int when)
+{
+    struct {
+      SOCKET sock;
+      struct sockaddr_in saddr;
+    } arg;
+    int saddr_len = sizeof(struct sockaddr_in);
+
+    switch(when) {
+     case NS_SOCK_READ:
+         if((arg.sock = Ns_SockAccept(sock,(struct sockaddr*)&arg.saddr,&saddr_len)) == INVALID_SOCKET) break;
+         if(dnsDebug > 3) Ns_Log(Error,"DnsTcpListen: connection from %s",ns_inet_ntoa(arg.saddr.sin_addr));
+         if(Ns_BeginDetachedThread(DnsTcpThread,(void *)&arg) != NS_OK) {
+           Ns_Log(Error,"nsdns: Ns_BeginThread() failed with %s.",strerror(errno));
+           close(arg.sock);
+         }
+         return NS_TRUE;
+    }
+    close(sock);
+    return NS_FALSE;
+} 
+
+static void
+DnsTcpThread(void *sock)
+{
+    struct {
+      struct sockaddr_in saddr;
+      SOCKET sock;
+    } arg;
+    short len;
+    dnsRequest *req;
+    char buf[DNS_BUF_SIZE];
+
+    memcpy(&arg,sock,sizeof(arg));
+    Ns_SockSetNonBlocking(arg.sock);
+    if(dnsRead(arg.sock,&len,2) != 2 ||
+       (len = ntohs(len)) > DNS_BUF_SIZE ||
+       dnsRead(arg.sock,buf,len) != len ||
+       !(req = dnsRequestCreate(arg.sock,buf,len))) {
+      close(arg.sock);
+      return;
+    }
+    req->flags |= DNS_TCP;
+    memcpy(&req->addr,&arg.saddr,sizeof(req->addr));
+    req->client = DnsClientFind(0,req->addr.sin_addr);
+    switch(dnsRequestHandle(req)) {
+     case 1:
+         /* Request will handled by proxy queue manager */
+         break;
+     case 0:
+         dnsRequestSend(req);
+     default:
+         dnsRequestFree(req);
+    }
+    close(arg.sock);
+}
+
+static void
 DnsProxyThread(void *arg)
 {
     int len;
@@ -608,168 +771,6 @@ DnsProxyThread(void *arg)
       }
       Ns_MutexUnlock(&dnsProxyMutex);
     }
-}
-
-static void
-DnsQueueListenThread(void *arg)
-{
-    int len = sizeof(struct sockaddr_in);
-    dnsRequest *req, buf;
-    struct timeval recv_time;
-    int id = 0;
-
-    Ns_ThreadSetName("nsdns:thread");
-
-    while(1) {
-      if ((buf.size = recvfrom(dnsUdpSock,buf.buffer,DNS_BUF_SIZE-1,0,(struct sockaddr*)&buf.addr,&len)) <= 0) {
-        Ns_Log(Error,"nsdns: recvfrom error: %s",strerror(errno));
-        continue;
-      }
-      buf.buffer[buf.size] = 0;
-      gettimeofday(&recv_time,0);
-      if(dnsDebug > 0) {
-        Ns_Log(Debug,"nsdns: received %d bytes from %s",buf.size,ns_inet_ntoa(buf.addr.sin_addr));
-      }
-      /*
-       *  Link new job into the queue
-       */
-      Ns_MutexLock(&dnsQueues[id].lock);
-      if((req = dnsQueues[id].freelist)) dnsQueues[id].freelist = req->next;
-      if(!req) req = ns_calloc(1,sizeof(dnsRequest));
-      memcpy(req,&buf,sizeof(buf));
-      req->recv_time = recv_time;
-      if(dnsQueues[id].tail) dnsQueues[id].tail->next = req;
-      dnsQueues[id].tail = req;
-      if(!dnsQueues[id].head) dnsQueues[id].head = req;
-      dnsQueues[id].size++;
-      dnsQueues[id].requests++;
-      Ns_CondBroadcast(&dnsQueues[id].cond);
-      Ns_MutexUnlock(&dnsQueues[id].lock);
-      if(++id >= dnsThreads) id = 0;
-    }
-}
-
-static void
-DnsQueueRequestThread(void *arg)
-{
-    char buf[32];
-    dnsQueue *queue;
-    dnsRequest *req;
-    unsigned long t0;
-    struct timeval end_time;
-
-    queue = (dnsQueue*)arg;
-    sprintf(buf, "nsdns:queue:%d", queue->id);
-    Ns_Log(Notice, "Starting thread: %s", buf);
-    Ns_ThreadSetName(buf);
-
-    Ns_MutexInit(&queue->lock);
-    Ns_MutexSetName(&queue->lock,buf);
-    Ns_MutexLock(&queue->lock);
-    while (1) {
-      while (!queue->head) {
-        Ns_CondWait(&queue->cond, &queue->lock);
-      }
-      /*
-       *  Unlink first job from the queue
-       */
-      req = queue->head;
-      queue->head = req->next;
-      if(queue->tail == req) queue->tail = 0;
-      if(queue->size > queue->maxsize) queue->maxsize = queue->size;
-      queue->size--;
-      Ns_MutexUnlock(&queue->lock);
-      gettimeofday(&req->start_time,0);
-      req->sock = dnsUdpSock;
-      // Allocate request structure
-      if((req->req = dnsParsePacket(req->buffer,req->size))) {
-        // Prepare reply header
-        req->reply = dnsPacketCreateReply(req->req);
-        req->client = DnsClientFind(0,req->addr.sin_addr);
-        switch(dnsRequestHandle(req)) {
-         case 1:
-            // Proxy will handle request
-            req = 0;
-            break;
-         case 0:
-            dnsRequestSend(req);
-            dnsPacketFree(req->req,3);
-            dnsPacketFree(req->reply,4);
-            break;
-        }
-      }
-      Ns_MutexLock(&queue->lock);
-      // Put request structure back if not handled by proxy
-      if(req) {
-        req->next = queue->freelist;
-        queue->freelist = req;
-      }
-      Ns_CondBroadcast(&queue->cond);
-      gettimeofday(&end_time,0);
-      // Update statistics, in milliseconds
-      t0 = ((end_time.tv_sec - req->start_time.tv_sec)*1000 + (end_time.tv_usec - req->start_time.tv_usec))/1000;
-      if(t0 > queue->rtime) queue->rtime = t0;
-      t0 = ((req->start_time.tv_sec - req->recv_time.tv_sec)*1000 + (req->start_time.tv_usec - req->recv_time.tv_usec))/1000;
-      if(t0 > queue->wtime) queue->wtime = t0;
-    }
-}
-
-static int
-DnsTcpListen(SOCKET sock,void *si,int when)
-{
-    struct {
-      SOCKET sock;
-      struct sockaddr_in saddr;
-    } arg;
-    int saddr_len = sizeof(struct sockaddr_in);
-
-    switch(when) {
-     case NS_SOCK_READ:
-         if((arg.sock = Ns_SockAccept(sock,(struct sockaddr*)&arg.saddr,&saddr_len)) == INVALID_SOCKET) break;
-         if(dnsDebug > 3) Ns_Log(Error,"DnsTcpListen: connection from %s",ns_inet_ntoa(arg.saddr.sin_addr));
-         if(Ns_BeginDetachedThread(DnsTcpThread,(void *)&arg) != NS_OK) {
-           Ns_Log(Error,"nsdns: Ns_BeginThread() failed with %s.",strerror(errno));
-           close(arg.sock);
-         }
-         return NS_TRUE;
-    }
-    close(sock);
-    return NS_FALSE;
-} 
-
-static void
-DnsTcpThread(void *sock)
-{
-    struct {
-      struct sockaddr_in saddr;
-      SOCKET sock;
-    } arg;
-    short len;
-    dnsRequest *req;
-    char buf[DNS_BUF_SIZE];
-
-    memcpy(&arg,sock,sizeof(arg));
-    Ns_SockSetNonBlocking(arg.sock);
-    if(dnsRead(arg.sock,&len,2) != 2 ||
-       (len = ntohs(len)) > DNS_BUF_SIZE ||
-       dnsRead(arg.sock,buf,len) != len ||
-       !(req = dnsRequestCreate(arg.sock,buf,len))) {
-      close(arg.sock);
-      return;
-    }
-    req->flags |= DNS_TCP;
-    memcpy(&req->addr,&arg.saddr,sizeof(req->addr));
-    req->client = DnsClientFind(0,req->addr.sin_addr);
-    switch(dnsRequestHandle(req)) {
-     case 1:
-         /* Request will handled by proxy queue manager */
-         break;
-     case 0:
-         dnsRequestSend(req);
-     default:
-         dnsRequestFree(req);
-    }
-    close(arg.sock);
 }
 
 static int

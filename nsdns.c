@@ -23,7 +23,6 @@
  * 
  */
 
-#define USE_TCL8X
 #include "ns.h"
 #include "dns.h"
 

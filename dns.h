@@ -119,6 +119,7 @@ typedef struct _dnsNAPTR {
 typedef struct _dnsRecord {
     struct _dnsRecord *next,*prev;
     char *name;
+    short nsize;
     unsigned short type;
     unsigned short class;
     unsigned long ttl;

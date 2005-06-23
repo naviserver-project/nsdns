@@ -31,6 +31,8 @@ typedef struct _dnsClient {
    char ipaddr[16];
    Tcl_HashTable list;
    struct _dnsClient *link;
+   unsigned long rcount;
+   unsigned short rstats[256];
 } dnsClient;
 
 // DNS request
@@ -240,12 +242,12 @@ DnsCmd(ClientData arg,Tcl_Interp *interp,int objc,Tcl_Obj *CONST objv[])
 {
     enum commands {
         cmdAdd, cmdDel, cmdFlush, cmdList, cmdResolve, cmdQueue, cmdLookup, cmdStat, cmdFind,
-        cmdClientAdd, cmdClientDel, cmdClientList, cmdClientLink, cmdClientFind
+        cmdClientAdd, cmdClientDel, cmdClientList, cmdClientLink, cmdClientFind, cmdClientStats
     };
 
     static const char *sCmd[] = {
         "add", "del", "flush", "list", "resolve", "queue", "lookup", "stat", "find",
-        "clientadd", "clientdel", "clientlist", "clientlink", "clientfind", 0
+        "clientadd", "clientdel", "clientlist", "clientlink", "clientfind", "clientstats", 0
     };
     int i,cmd;
     struct in_addr addr;
@@ -351,7 +353,7 @@ DnsCmd(ClientData arg,Tcl_Interp *interp,int objc,Tcl_Obj *CONST objv[])
           return TCL_ERROR;
         }
         Ns_RWLockWrLock(&client->lock);
-        if((hrec = Tcl_FindHashEntry(&client->list,Tcl_GetString(objv[argp])))) {
+        if((hrec = Tcl_FindHashEntry(&client->list,Tcl_GetStringFromObj(objv[argp],&i)))) {
           int type = dnsType(Tcl_GetString(objv[argp+1]));
           dnsRecord *list = drec = Tcl_GetHashValue(hrec);
           while(drec) {
@@ -366,6 +368,9 @@ DnsCmd(ClientData arg,Tcl_Interp *interp,int objc,Tcl_Obj *CONST objv[])
             }
             drec = drec->next;
           }
+          // Update rstats
+          if(i < sizeof(client->rstats)) client->rstats[i]--;
+          client->rcount--;
         }
         Ns_RWLockUnlock(&client->lock);
         break;
@@ -392,6 +397,26 @@ DnsCmd(ClientData arg,Tcl_Interp *interp,int objc,Tcl_Obj *CONST objv[])
 	}
         Ns_RWLockUnlock(&client->lock);
         break;
+
+    case cmdClientStats: {
+        char *ptr,*stats;
+        Ns_RWLockWrLock(&dnsClientLock);
+        hrec = Tcl_FirstHashEntry(&dnsClientList,&search);
+        while(hrec) {
+          client = Tcl_GetHashValue(hrec);
+          stats = Tcl_HashStats(&client->list);
+          addr.s_addr = (unsigned long)Tcl_GetHashKey(&dnsClientList, hrec);
+          Tcl_AppendElement(interp, ns_inet_ntoa(addr));
+          sprintf(tmp, "%lu", client->rcount);
+          Tcl_AppendElement(interp, tmp);
+          for(ptr = stats;*ptr;ptr++) if(*ptr == '\n') *ptr = ',';
+          Tcl_AppendElement(interp, stats);
+          hrec = Tcl_NextHashEntry(&search);
+          Tcl_Free(stats);
+        }
+        Ns_RWLockUnlock(&dnsClientLock);
+        break;
+    }
 
     case cmdClientList:
         Ns_RWLockWrLock(&dnsClientLock);
@@ -433,6 +458,8 @@ DnsCmd(ClientData arg,Tcl_Interp *interp,int objc,Tcl_Obj *CONST objv[])
           Tcl_DeleteHashEntry(hrec);
           hrec = Tcl_NextHashEntry(&search);
 	}
+        client->rcount = 0;
+        memset(client->rstats,0,sizeof(client->rstats));
         Ns_RWLockUnlock(&client->lock);
         break;
 
@@ -561,8 +588,8 @@ DnsQueueRequestThread(void *arg)
     char buf[32];
     dnsQueue *queue;
     dnsRequest *req;
-    unsigned long rt,wt;
     struct timeval end_time;
+    unsigned long rt,wt;
 
     queue = (dnsQueue*)arg;
     sprintf(buf, "nsdns:queue:%d", queue->id);
@@ -584,6 +611,7 @@ DnsQueueRequestThread(void *arg)
       if(queue->tail == req) queue->tail = 0;
       queue->size--;
       Ns_MutexUnlock(&queue->lock);
+      rt = wt = 0;
       gettimeofday(&req->start_time,0);
       req->sock = dnsUdpSock;
       // Allocate request structure
@@ -600,13 +628,13 @@ DnsQueueRequestThread(void *arg)
             dnsRequestSend(req);
             dnsPacketFree(req->req,3);
             dnsPacketFree(req->reply,4);
+            // Update statistics, in milliseconds
+            gettimeofday(&end_time,0);
+            rt = (end_time.tv_sec - req->start_time.tv_sec)*1000 + (end_time.tv_usec - req->start_time.tv_usec)/1000;
+            wt = (req->start_time.tv_sec - req->recv_time.tv_sec)*1000 + (req->start_time.tv_usec - req->recv_time.tv_usec)/1000;
             break;
         }
       }
-      // Update statistics, in milliseconds
-      gettimeofday(&end_time,0);
-      rt = (end_time.tv_sec - req->start_time.tv_sec)*1000 + (end_time.tv_usec - req->start_time.tv_usec)/1000;
-      wt = (req->start_time.tv_sec - req->recv_time.tv_sec)*1000 + (req->start_time.tv_usec - req->recv_time.tv_usec)/1000;
       Ns_MutexLock(&queue->lock);
       // Put request structure back if not handled by proxy
       if(req) {
@@ -835,8 +863,9 @@ dnsRequestFree(dnsRequest *req)
 static int
 dnsRequestHandle(dnsRequest *req)
 {
-    char *dot,domain[255];
-    Tcl_HashEntry *hrec;
+    char *ptr;
+    int nsize;
+    Tcl_HashEntry *hrec = 0;
     dnsRecord *qrec,*qcache,*qstart,*qend;
     unsigned long now = time(0);
 
@@ -847,13 +876,33 @@ dnsRequestHandle(dnsRequest *req)
        Ns_RWLockRdLock(&req->client->lock);
        for(qrec = req->req->qdlist;qrec;qrec = qrec->next) {
          if(!qrec->name) continue;
-         if(!(hrec = Tcl_FindHashEntry(&req->client->list,qrec->name))) {
-           snprintf(domain,sizeof(domain)-1,"*.%s",qrec->name);
-           if(!(hrec = Tcl_FindHashEntry(&req->client->list,domain))) {
-             if(!(dot = strchr(qrec->name,'.'))) continue;
-             snprintf(domain,sizeof(domain)-1,"*%s",dot);
-             if(!(hrec = Tcl_FindHashEntry(&req->client->list,domain))) continue;
-           }
+         switch(qrec->type) {
+          case DNS_TYPE_NAPTR:
+             // Calc how many dots we have in the name
+             ptr = qrec->name;
+             nsize = qrec->nsize;
+             while(*ptr) {
+               // Search only those names that we have in cache
+               if(nsize > sizeof(req->client->rstats) || req->client->rstats[nsize]) {
+                 if((hrec = Tcl_FindHashEntry(&req->client->list,ptr))) break;
+               }
+               for(;*ptr && *ptr != '.';ptr++,nsize--);
+               if(*ptr == '.') ptr++,nsize--;
+             }
+             if(!hrec) continue;
+             break;
+
+          default:
+             // Exact and wildcard search
+             if(!(hrec = Tcl_FindHashEntry(&req->client->list,qrec->name))) {
+               char domain[255];
+               snprintf(domain,sizeof(domain)-1,"*.%s",qrec->name);
+               if(!(hrec = Tcl_FindHashEntry(&req->client->list,domain))) {
+                 if(!(ptr = strchr(qrec->name,'.'))) continue;
+                 snprintf(domain,sizeof(domain)-1,"*%s",ptr);
+                 if(!(hrec = Tcl_FindHashEntry(&req->client->list,domain))) continue;
+               }
+             }
          }
          if(!(qcache = Tcl_GetHashValue(hrec))) continue;
          qend = 0;
@@ -974,7 +1023,7 @@ dnsRequestSend(dnsRequest *req)
 static void
 dnsRecordCache(dnsClient *client, dnsRecord **list)
 {
-    int new;
+    int flag;
     dnsRecord *drec,*hlist;
     Tcl_HashEntry *hrec;
     unsigned long now = time(0);
@@ -985,9 +1034,10 @@ dnsRecordCache(dnsClient *client, dnsRecord **list)
       drec->timestamp = now;
       drec->next = drec->prev = 0;
       Ns_RWLockWrLock(&client->lock);
-      hrec = Tcl_CreateHashEntry(&client->list,drec->name,&new);
-      if(new) {
+      hrec = Tcl_CreateHashEntry(&client->list,drec->name,&flag);
+      if(flag) {
         Tcl_SetHashValue(hrec,drec);
+        client->rcount++;
       } else {
         hlist = Tcl_GetHashValue(hrec);
         if(!dnsRecordSearch(hlist,drec,1)) {
@@ -996,6 +1046,12 @@ dnsRecordCache(dnsClient *client, dnsRecord **list)
         } else {
           dnsRecordFree(drec);
         }
+      }
+      switch(drec->type) {
+       case DNS_TYPE_NAPTR:
+          // Update route statistics, mark that we have routes with that length in the cache
+          if(drec->nsize < sizeof(client->rstats)) client->rstats[drec->nsize]++;
+          break;
       }
       Ns_RWLockUnlock(&client->lock);
     }

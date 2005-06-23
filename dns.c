@@ -347,6 +347,7 @@ dnsRecordCreate(dnsRecord *from)
     dnsRecord *rec  = ns_calloc(1,sizeof(dnsRecord));
     if(from) {
       rec->name = ns_strcopy(from->name);
+      rec->nsize = from->nsize;
       rec->type = from->type;
       rec->class = from->class;
       rec->ttl = from->ttl;
@@ -396,7 +397,9 @@ dnsRecord *
 dnsRecordCreateA(char *name,unsigned long ipaddr)
 {
     dnsRecord *y = ns_calloc(1,sizeof(dnsRecord));
-    y->name = ns_strcopy(name);
+    y->nsize = strlen(name);
+    y->name = ns_malloc(y->nsize+1);
+    strcpy(y->name,name);
     y->type = DNS_TYPE_A;
     y->class = DNS_CLASS_INET;
     y->len = 4;
@@ -409,7 +412,9 @@ dnsRecord *
 dnsRecordCreateNS(char *name,char *data)
 {
     dnsRecord *y = ns_calloc(1,sizeof(dnsRecord));
-    y->name = ns_strcopy(name);
+    y->nsize = strlen(name);
+    y->name = ns_malloc(y->nsize+1);
+    strcpy(y->name,name);
     y->type = DNS_TYPE_NS;
     y->class = DNS_CLASS_INET;
     y->data.name = ns_strcopy(data);
@@ -422,7 +427,9 @@ dnsRecord *
 dnsRecordCreateCNAME(char *name,char *data)
 {
     dnsRecord *y = ns_calloc(1,sizeof(dnsRecord));
-    y->name = ns_strcopy(name);
+    y->nsize = strlen(name);
+    y->name = ns_malloc(y->nsize+1);
+    strcpy(y->name,name);
     y->type = DNS_TYPE_CNAME;
     y->class = DNS_CLASS_INET;
     y->data.name = ns_strcopy(data);
@@ -435,7 +442,9 @@ dnsRecord *
 dnsRecordCreatePTR(char *name,char *data)
 {
     dnsRecord *y = ns_calloc(1,sizeof(dnsRecord));
-    y->name = ns_strcopy(name);
+    y->nsize = strlen(name);
+    y->name = ns_malloc(y->nsize+1);
+    strcpy(y->name,name);
     y->type = DNS_TYPE_PTR;
     y->class = DNS_CLASS_INET;
     y->data.name = ns_strcopy(data);
@@ -448,7 +457,9 @@ dnsRecord *
 dnsRecordCreateMX(char *name,int preference,char *data)
 {
     dnsRecord *y = ns_calloc(1,sizeof(dnsRecord));
-    y->name = ns_strcopy(name);
+    y->nsize = strlen(name);
+    y->name = ns_malloc(y->nsize+1);
+    strcpy(y->name,name);
     y->type = DNS_TYPE_MX;
     y->class = DNS_CLASS_INET;
     y->data.mx = ns_calloc(1,sizeof(dnsMX));
@@ -464,7 +475,9 @@ dnsRecord *
 dnsRecordCreateNAPTR(char *name,int order,int preference,char *flags,char *service,char *regexp,char *replace)
 {
     dnsRecord *y = ns_calloc(1,sizeof(dnsRecord));
-    y->name = ns_strcopy(name);
+    y->nsize = strlen(name);
+    y->name = ns_malloc(y->nsize+1);
+    strcpy(y->name,name);
     y->type = DNS_TYPE_NAPTR;
     y->class = DNS_CLASS_INET;
     y->data.naptr = ns_calloc(1,sizeof(dnsMX));
@@ -486,7 +499,9 @@ dnsRecordCreateSOA(char *name,char *mname,char *rname,
                    unsigned long retry,unsigned long expire,unsigned long ttl)
 {
     dnsRecord *y = ns_calloc(1,sizeof(dnsRecord));
-    y->name = ns_strcopy(name);
+    y->nsize = strlen(name);
+    y->name = ns_malloc(y->nsize+1);
+    strcpy(y->name,name);
     y->type = DNS_TYPE_SOA;
     y->class = DNS_CLASS_INET;
     y->data.soa = ns_calloc(1,sizeof(dnsSOA));
@@ -699,7 +714,7 @@ dnsParseName(dnsPacket *pkt,char **ptr,char *buf,int buflen,int pos,int level)
     }
     buf[pos] = 0;
     // Remove last . in the name
-    if(buf[pos-1] == '.') buf[pos-1] = 0;
+    if(buf[pos-1] == '.') buf[--pos] = 0;
     return pos;
 }
 
@@ -732,18 +747,19 @@ dnsParseHeader(void *buf,int size)
 dnsRecord *
 dnsParseRecord(dnsPacket *pkt,int query)
 {
-    int rc, offset;
+    int offset;
     char name[256] = "";
     dnsRecord *y;
 
     y = ns_calloc(1,sizeof(dnsRecord));
     offset = (pkt->buf.ptr - pkt->buf.data)-2;
     // The name of the resource
-    if((rc = dnsParseName(pkt,&pkt->buf.ptr,name,255,0,0)) < 0) {
-      snprintf(name,255,"invalid name: %d %s: ",rc,pkt->buf.ptr);
+    if((y->nsize = dnsParseName(pkt,&pkt->buf.ptr,name,255,0,0)) < 0) {
+      snprintf(name,255,"invalid name: %d %s: ",y->nsize,pkt->buf.ptr);
       goto err;
     }
-    y->name = ns_strdup(name);
+    y->name = ns_malloc(y->nsize+1);
+    strcpy(y->name,name);
     // The type of data
     if(pkt->buf.ptr+2 > pkt->buf.data+pkt->buf.allocated) {
       strcpy(name,"invalid type position");

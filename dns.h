@@ -28,6 +28,7 @@
 // DNS flags
 #define DNS_TCP                 0x0001
 #define DNS_PROXY               0x0002
+#define DNS_NAPTR_REGEXP        0x0004
 
 //  DNS record types
 #define	DNS_HEADER_LEN          12
@@ -113,6 +114,8 @@ typedef struct _dnsNAPTR {
     char *flags;
     char *service;
     char *regexp;
+    char *regexp_p1;
+    char *regexp_p2;
     char *replace;
 } dnsNAPTR;
 
@@ -157,6 +160,7 @@ typedef struct _dnsPacket {
 } dnsPacket;
 
 extern int dnsDebug;
+extern int dnsFlags;
 extern int dnsTTL;
 
 int dnsType(char *type);
@@ -178,6 +182,7 @@ dnsRecord *dnsRecordCreateSOA(char *name,char *mname,char *rname,
 dnsRecord *dnsRecordCreateNAPTR(char *name,int order,int preference,char *flags,
                                 char *service,char *regexp,char *replace);
 Tcl_Obj *dnsRecordCreateTclObj(Tcl_Interp *interp,dnsRecord *drec);
+void dnsRecordUpdate(dnsRecord *rec);
 dnsRecord *dnsRecordAppend(dnsRecord **list,dnsRecord *pkt);
 dnsRecord *dnsRecordRemove(dnsRecord **list,dnsRecord *link);
 dnsPacket *dnsParseHeader(void *packet,int size);

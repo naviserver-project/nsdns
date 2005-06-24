@@ -39,6 +39,7 @@ typedef struct _dnsServer {
 
 int dnsDebug = 0;
 int dnsTTL = 86400;
+int dnsFlags = 0;
 
 static Ns_Mutex dnsMutex;
 static dnsServer *dnsServers = 0;
@@ -389,6 +390,7 @@ dnsRecordCreate(dnsRecord *from)
            rec->data.soa->ttl = from->data.soa->ttl;
            break;
       }
+      dnsRecordUpdate(rec);
     }
     return rec;
 }
@@ -564,6 +566,24 @@ dnsRecordCreateTclObj(Tcl_Interp *interp,dnsRecord *drec)
      drec = drec->next;
    }
    return list;
+}
+
+void
+dnsRecordUpdate(dnsRecord *rec)
+{
+    switch(rec->type) {
+     case DNS_TYPE_NAPTR:
+        // Save pointer in the regexp where phone number should be
+        // placed for quick replace later
+        if(!(dnsFlags & DNS_NAPTR_REGEXP && rec->data.naptr->regexp)) break;
+        if((rec->data.naptr->regexp_p2 = strchr(rec->data.naptr->regexp,'@'))) {
+          for(rec->data.naptr->regexp_p1 = rec->data.naptr->regexp_p2;
+              rec->data.naptr->regexp_p1 > rec->data.naptr->regexp &&
+              *rec->data.naptr->regexp_p1 != ':';
+              rec->data.naptr->regexp_p1--);
+        }
+        break;
+    }
 }
 
 dnsRecord *

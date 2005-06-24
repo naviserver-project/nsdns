@@ -133,6 +133,7 @@ Ns_ModuleInit(char *server, char *module)
     path = Ns_ConfigGetPath(server,module,NULL);
     address = Ns_ConfigGet(path,"address");
 
+    if(!Ns_ConfigGetInt(path,"flags",&dnsFlags)) dnsFlags = 0;
     if(!Ns_ConfigGetInt(path,"debug",&dnsDebug)) dnsDebug = 0;
     if(!Ns_ConfigGetInt(path,"port",&dnsPort)) dnsPort = 5353;
     if(!Ns_ConfigGetInt(path,"ttl",&dnsTTL)) dnsTTL = 86400;
@@ -333,6 +334,7 @@ DnsCmd(ClientData arg,Tcl_Interp *interp,int objc,Tcl_Obj *CONST objv[])
              Tcl_AppendResult(interp,"wrong record type, should be A,MX,PTR,CNAME,NS",0);
              return TCL_ERROR;
         }
+        dnsRecordUpdate(drec);
         dnsRecordCache(client, &drec);
         break;
 
@@ -863,11 +865,11 @@ dnsRequestFree(dnsRequest *req)
 static int
 dnsRequestHandle(dnsRequest *req)
 {
-    char *ptr;
     int nsize;
-    Tcl_HashEntry *hrec = 0;
-    dnsRecord *qrec,*qcache,*qstart,*qend;
+    char *ptr,*str;
     unsigned long now = time(0);
+    Tcl_HashEntry *nrec, *hrec = 0;
+    dnsRecord *qrec,*qcache,*ncache,*qstart,*qend;
 
     dnsPacketLog(req->req,1,"Received request from client=%s",req->client->ipaddr);
 
@@ -876,11 +878,11 @@ dnsRequestHandle(dnsRequest *req)
        Ns_RWLockRdLock(&req->client->lock);
        for(qrec = req->req->qdlist;qrec;qrec = qrec->next) {
          if(!qrec->name) continue;
+         nsize = qrec->nsize;
          switch(qrec->type) {
           case DNS_TYPE_NAPTR:
              // Calc how many dots we have in the name
              ptr = qrec->name;
-             nsize = qrec->nsize;
              while(*ptr) {
                // Search only those names that we have in cache
                if(nsize > sizeof(req->client->rstats) || req->client->rstats[nsize]) {
@@ -932,9 +934,7 @@ dnsRequestHandle(dnsRequest *req)
                continue;
              }
              switch(qcache->type) {
-              case DNS_TYPE_NS: {
-                dnsRecord *ncache;
-                Tcl_HashEntry *nrec;
+              case DNS_TYPE_NS:
                 if(qrec->type == DNS_TYPE_NS)
                   dnsPacketAddRecord(req->reply,&req->reply->anlist,&req->reply->ancount,dnsRecordCreate(qcache));
                 else
@@ -946,7 +946,33 @@ dnsRequestHandle(dnsRequest *req)
                       dnsPacketAddRecord(req->reply,&req->reply->arlist,&req->reply->arcount,dnsRecordCreate(ncache));
                 }
                 break;
-              }
+             
+              case DNS_TYPE_NAPTR:
+                // If we found record using wildcard, we have to replace
+                // shorter phone in the regexp with requested from the query
+                if(dnsFlags & DNS_NAPTR_REGEXP &&
+                   nsize < qrec->nsize && 
+                   qcache->data.naptr->regexp_p1) {
+                  // Create record without regexp, we will build it manually
+                  ptr = qcache->data.naptr->regexp;
+                  qcache->data.naptr->regexp = 0;
+                  ncache = dnsRecordCreate(qcache);
+                  qcache->data.naptr->regexp = ptr;
+                  // Build regexp from 3 parts
+                  ncache->data.naptr->regexp = str = ns_malloc(qrec->nsize+strlen(ptr)+1);
+                  // Before phone
+                  for(ptr = qcache->data.naptr->regexp;ptr <= qcache->data.naptr->regexp_p1;) *str++ = *ptr++;
+                  // Phone itself
+                  for(ptr = &qrec->name[qrec->nsize-1];ptr >= qrec->name;ptr--) {
+                    if(isdigit(*ptr) && (ptr == qrec->name || *(ptr-1) == '.')) *str++ = *ptr;
+                  }
+                  // After phone
+                  for(ptr = qcache->data.naptr->regexp_p2;*ptr;) *str++ = *ptr++;
+                  *str = 0; 
+                  dnsPacketAddRecord(req->reply,&req->reply->anlist,&req->reply->ancount,ncache);
+                  break;
+                }
+
               default:
                 dnsPacketAddRecord(req->reply,&req->reply->anlist,&req->reply->ancount,dnsRecordCreate(qcache));
              }

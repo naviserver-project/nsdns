@@ -482,7 +482,7 @@ dnsRecordCreateNAPTR(char *name,int order,int preference,char *flags,char *servi
     strcpy(y->name,name);
     y->type = DNS_TYPE_NAPTR;
     y->class = DNS_CLASS_INET;
-    y->data.naptr = ns_calloc(1,sizeof(dnsMX));
+    y->data.naptr = ns_calloc(1,sizeof(dnsNAPTR));
     y->data.naptr->order = order;
     y->data.naptr->preference = preference;
     y->data.naptr->flags = ns_strcopy(flags);

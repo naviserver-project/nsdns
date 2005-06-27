@@ -1,3 +1,7 @@
+2005-06-26 Vlad Seryakov vlad@crystalballinc.com
+
+	* updated packet parsing to work on Sparc
+
 2005-06-22 Vlad Seryakov vlad@crystalballinc.com
 
 	* statistics and NAPTR searching

@@ -768,6 +768,8 @@ dnsRecord *
 dnsParseRecord(dnsPacket *pkt,int query)
 {
     int offset;
+    unsigned long ul;
+    unsigned short us;
     char name[256] = "";
     dnsRecord *y;
 
@@ -785,14 +787,16 @@ dnsParseRecord(dnsPacket *pkt,int query)
       strcpy(name,"invalid type position");
       goto err;
     }
-    y->type = ntohs(*((unsigned short*)pkt->buf.ptr));
+    memcpy(&us,pkt->buf.ptr,sizeof(us));
+    y->type = ntohs(us);
     pkt->buf.ptr += 2;
     // The class type
     if(pkt->buf.ptr+2 > pkt->buf.data+pkt->buf.allocated) {
       strcpy(name,"invalid class position");
       goto err;
     }
-    y->class = ntohs(*((unsigned short*)pkt->buf.ptr));
+    memcpy(&us,pkt->buf.ptr,sizeof(us));
+    y->class = ntohs(us);
     pkt->buf.ptr += 2;
     // Query block stops here
     if(query) goto rec;
@@ -801,14 +805,16 @@ dnsParseRecord(dnsPacket *pkt,int query)
       strcpy(name,"invalid TTL position");
       goto err;
     }
-    y->ttl = ntohl(*((unsigned long*)pkt->buf.ptr));
+    memcpy(&ul,pkt->buf.ptr,sizeof(ul));
+    y->ttl = ntohl(ul);
     pkt->buf.ptr += 4;
     // Fetch the resource data.
     if(pkt->buf.ptr+2 > pkt->buf.data+pkt->buf.allocated) {
       strcpy(name,"invalid data position");
       goto err;
     }
-    if(!(y->len = ntohs(*((unsigned short*)pkt->buf.ptr)))) {
+    memcpy(&us,pkt->buf.ptr,sizeof(us));
+    if(!(y->len = ntohs(us))) {
       strcpy(name,"empty data len");
       goto err;
     }
@@ -824,7 +830,8 @@ dnsParseRecord(dnsPacket *pkt,int query)
          break;
      case DNS_TYPE_MX:
          y->data.soa = ns_calloc(1,sizeof(dnsSOA));
-         y->data.mx->preference = ntohs(*((unsigned short*)pkt->buf.ptr));
+         memcpy(&us,pkt->buf.ptr,sizeof(us));
+         y->data.mx->preference = ntohs(us);
          pkt->buf.ptr += 2;
          if(dnsParseName(pkt,&pkt->buf.ptr,name,255,0,0) < 0) goto err;
          y->data.mx->name = ns_strcopy(name);
@@ -838,9 +845,11 @@ dnsParseRecord(dnsPacket *pkt,int query)
          break;
      case DNS_TYPE_NAPTR:
          y->data.naptr = ns_calloc(1,sizeof(dnsNAPTR));
-         y->data.naptr->order = ntohs(*((unsigned short*)pkt->buf.ptr));
+         memcpy(&us,pkt->buf.ptr,sizeof(us));
+         y->data.naptr->order = ntohs(us);
          pkt->buf.ptr += 2;
-         y->data.mx->preference = ntohs(*((unsigned short*)pkt->buf.ptr));
+         memcpy(&us,pkt->buf.ptr,sizeof(us));
+         y->data.mx->preference = ntohs(us);
          pkt->buf.ptr += 2;
          /* flags */
          if(dnsParseString(pkt,&y->data.naptr->flags) < 0) {
@@ -873,15 +882,20 @@ dnsParseRecord(dnsPacket *pkt,int query)
            strcpy(name,"invalid SOA data len");
            goto err;
          }
-         y->data.soa->serial = ntohl(*((unsigned long*)pkt->buf.ptr));
+         memcpy(&ul,pkt->buf.ptr,sizeof(ul));
+         y->data.soa->serial = ntohl(ul);
          pkt->buf.ptr += 4;
-         y->data.soa->refresh = ntohl(*((unsigned long*)pkt->buf.ptr));
+         memcpy(&ul,pkt->buf.ptr,sizeof(ul));
+         y->data.soa->refresh = ntohl(ul);
          pkt->buf.ptr += 4;
-         y->data.soa->retry = ntohl(*((unsigned long*)pkt->buf.ptr));
+         memcpy(&ul,pkt->buf.ptr,sizeof(ul));
+         y->data.soa->retry = ntohl(ul);
          pkt->buf.ptr += 4;
-         y->data.soa->expire = ntohl(*((unsigned long*)pkt->buf.ptr));
+         memcpy(&ul,pkt->buf.ptr,sizeof(ul));
+         y->data.soa->expire = ntohl(ul);
          pkt->buf.ptr += 4;
-         y->data.soa->ttl = ntohl(*((unsigned long*)pkt->buf.ptr));
+         memcpy(&ul,pkt->buf.ptr,sizeof(ul));
+         y->data.soa->ttl = ntohl(ul);
          pkt->buf.ptr += 4;
     }
 rec:
@@ -988,14 +1002,16 @@ dnsEncodePtr(dnsPacket *pkt,int offset)
 void
 dnsEncodeShort(dnsPacket *pkt,int num)
 {
-    *((unsigned short*)pkt->buf.ptr) = htons((unsigned short)num);
+    unsigned short us = htons((unsigned short)num);
+    memcpy(pkt->buf.ptr,&us,sizeof(us));
     pkt->buf.ptr += 2;
 }
 
 void
 dnsEncodeLong(dnsPacket *pkt,unsigned long num)
 {
-    *((unsigned long*)pkt->buf.ptr) = htonl((unsigned long)num);
+    unsigned long ul = htonl((unsigned long)num);
+    memcpy(pkt->buf.ptr,&ul,sizeof(ul));
     pkt->buf.ptr += 4;
 }
 
@@ -1010,8 +1026,7 @@ void
 dnsEncodeString(dnsPacket *pkt,char *str)
 {
     int len = str ? strlen(str) : 0;
-    *((unsigned short*)pkt->buf.ptr) = len;
-    pkt->buf.ptr++;
+    *pkt->buf.ptr++ = len;
     if(len) {
       memcpy(pkt->buf.ptr,str,(unsigned)len);
       pkt->buf.ptr += len;
@@ -1029,8 +1044,8 @@ dnsEncodeBegin(dnsPacket *pkt)
 void
 dnsEncodeEnd(dnsPacket *pkt)
 {
-    unsigned short len = pkt->buf.ptr - pkt->buf.rec;
-    *((unsigned short*)pkt->buf.rec) = htons(len - 2);
+    unsigned short us = htons(pkt->buf.ptr - pkt->buf.rec - 2);
+    memcpy(pkt->buf.rec,&us,sizeof(us));
 }
 
 void

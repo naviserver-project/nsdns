@@ -1,3 +1,7 @@
+2005-08-01 Vlad Seryakov vlad@crystalballinc.com
+
+	* removed all compat functions
+
 2005-06-26 Vlad Seryakov vlad@crystalballinc.com
 
 	* updated packet parsing to work on Sparc

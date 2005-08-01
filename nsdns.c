@@ -131,7 +131,7 @@ Ns_ModuleInit(char *server, char *module)
     memset(&dnsQueues,0,sizeof(dnsQueues));
 
     path = Ns_ConfigGetPath(server,module,NULL);
-    address = Ns_ConfigGet(path,"address");
+    address = Ns_ConfigGetValue(path,"address");
 
     if(!Ns_ConfigGetInt(path,"flags",&dnsFlags)) dnsFlags = 0;
     if(!Ns_ConfigGetInt(path,"debug",&dnsDebug)) dnsDebug = 0;
@@ -144,9 +144,9 @@ Ns_ModuleInit(char *server, char *module)
     if(!Ns_ConfigGetInt(path,"proxytimeout",&dnsProxyTimeout)) dnsProxyTimeout = 3;
     if(!Ns_ConfigGetInt(path,"proxyretries",&dnsProxyRetries)) dnsProxyRetries = 2;
     if (!Ns_ConfigGetInt(path,"threads",&dnsThreads)) dnsThreads = 1;
-    dnsDefaultHost = Ns_ConfigGet(path,"defaulthost");
+    dnsDefaultHost = Ns_ConfigGetValue(path,"defaulthost");
     // Resolving dns servers
-    dnsInit("nameserver",Ns_ConfigGet(path,"nameserver"),0);
+    dnsInit("nameserver",Ns_ConfigGetValue(path,"nameserver"),0);
     /* If no port specified it will be just client dns resolver module */
     if(dnsPort > 0) {
       // UDP socket
@@ -163,14 +163,15 @@ Ns_ModuleInit(char *server, char *module)
       Ns_SockCallback(dnsTcpSock,DnsTcpListen,0,NS_SOCK_READ|NS_SOCK_EXIT|NS_SOCK_EXCEPTION);
       // DNS proxy thread
       if(!Ns_ConfigGetInt(path,"proxyport",&dnsProxyPort)) dnsProxyPort = 53;
-      if((dnsProxyHost = Ns_ConfigGet(path,"proxyhost")) &&
-          (Ns_GetSockAddr(&dnsProxyAddr,dnsProxyHost,dnsProxyPort) != NS_OK ||
-           (dnsProxySock = socket(AF_INET,SOCK_DGRAM,0)) == -1 ||
-           Ns_BeginDetachedThread(DnsProxyThread,0) != NS_OK)) {
-        close(dnsUdpSock);
-        close(dnsTcpSock);
-        Ns_Log(Error,"nsdns: create proxy thread %s:%d: %s",dnsProxyHost,dnsProxyPort,strerror(errno));
-        return NS_ERROR;
+      if((dnsProxyHost = Ns_ConfigGetValue(path,"proxyhost"))) {
+        if(Ns_GetSockAddr(&dnsProxyAddr,dnsProxyHost,dnsProxyPort) != NS_OK ||
+           (dnsProxySock = socket(AF_INET,SOCK_DGRAM,0)) == -1) {
+          close(dnsUdpSock);
+          close(dnsTcpSock);
+          Ns_Log(Error,"nsdns: create proxy thread %s:%d: %s",dnsProxyHost,dnsProxyPort,strerror(errno));
+          return NS_ERROR;
+        }
+        Ns_ThreadCreate(DnsProxyThread,0,0,0);
       }
       if(dnsRcvBuf) {
         setsockopt(dnsUdpSock,SOL_SOCKET,SO_RCVBUF,&dnsRcvBuf,sizeof(dnsRcvBuf));
@@ -185,16 +186,10 @@ Ns_ModuleInit(char *server, char *module)
           req->next = dnsQueues[n].freelist;
           dnsQueues[n].freelist = req;
         }
-        if(Ns_BeginDetachedThread(DnsQueueRequestThread,&dnsQueues[n]) != NS_OK) {
-          Ns_Log(Error,"nsdns: queue thread failed: %s",strerror(errno));
-          return NS_ERROR;
-        }
+        Ns_ThreadCreate(DnsQueueRequestThread,&dnsQueues[n],0,0);
       }
       // Start listen thread
-      if(Ns_BeginDetachedThread(DnsQueueListenThread,0) != NS_OK) {
-        Ns_Log(Error,"nsdns: main thread failed: %s",strerror(errno));
-        return NS_ERROR;
-      }
+      Ns_ThreadCreate(DnsQueueListenThread,0,0,0);
     }
     if(dnsDebug) {
       Tcl_SetPanicProc(DnsPanic);
@@ -203,7 +198,8 @@ Ns_ModuleInit(char *server, char *module)
     }
     Ns_MutexSetName2(&dnsProxyMutex,"nsdns","proxy");
     Ns_Log(Notice,"nsdns: version %s listening on %s:%d, FD %d:%d",VERSION,address?address:"0.0.0.0",dnsPort,dnsUdpSock,dnsTcpSock);
-    return Ns_TclInitInterps(server,DnsInterpInit,NULL);
+    Ns_TclRegisterTrace(server, DnsInterpInit, 0, NS_TCL_TRACE_CREATE);
+    return NS_OK;
 }
 
 /*
@@ -406,7 +402,7 @@ DnsCmd(ClientData arg,Tcl_Interp *interp,int objc,Tcl_Obj *CONST objv[])
         hrec = Tcl_FirstHashEntry(&dnsClientList,&search);
         while(hrec) {
           client = Tcl_GetHashValue(hrec);
-          stats = Tcl_HashStats(&client->list);
+          stats = (char*)Tcl_HashStats(&client->list);
           addr.s_addr = (unsigned long)Tcl_GetHashKey(&dnsClientList, hrec);
           Tcl_AppendElement(interp, ns_inet_ntoa(addr));
           sprintf(tmp, "%lu", client->rcount);
@@ -661,10 +657,7 @@ DnsTcpListen(SOCKET sock,void *si,int when)
      case NS_SOCK_READ:
          if((arg.sock = Ns_SockAccept(sock,(struct sockaddr*)&arg.saddr,&saddr_len)) == INVALID_SOCKET) break;
          if(dnsDebug > 3) Ns_Log(Error,"DnsTcpListen: connection from %s",ns_inet_ntoa(arg.saddr.sin_addr));
-         if(Ns_BeginDetachedThread(DnsTcpThread,(void *)&arg) != NS_OK) {
-           Ns_Log(Error,"nsdns: Ns_BeginThread() failed with %s.",strerror(errno));
-           close(arg.sock);
-         }
+         Ns_ThreadCreate(DnsTcpThread,(void *)&arg,0,0);
          return NS_TRUE;
     }
     close(sock);

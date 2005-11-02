@@ -150,12 +150,14 @@ Ns_ModuleInit(char *server, char *module)
     /* If no port specified it will be just client dns resolver module */
     if(dnsPort > 0) {
       // UDP socket
-      if((dnsUdpSock = Ns_SockListenUdp(address,dnsPort)) == -1) {
+      if((dnsUdpSock = Ns_SockListenUdp(address,dnsPort)) == -1 &&
+         (dnsUdpSock = Ns_SockBinderListen('U',address,dnsPort,0)) == -1) {
         Ns_Log(Error,"nsdns: udp: %s:%d: couldn't create socket: %s",address,dnsPort,strerror(errno));
         return NS_ERROR;
       }
       // TCP socket
-      if((dnsTcpSock = Ns_SockListen(address,dnsPort)) == -1) {
+      if((dnsTcpSock = Ns_SockListen(address,dnsPort)) == -1 &&
+         (dnsTcpSock = Ns_SockBinderListen('T',address,dnsPort,32)) == -1) {
         Ns_Log(Error,"nsdns: tcp: %s:%d: couldn't create socket: %s",address,dnsPort,strerror(errno));
         return NS_ERROR;
       }

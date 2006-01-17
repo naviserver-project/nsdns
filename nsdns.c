@@ -552,7 +552,9 @@ DnsQueueListenThread(void *arg)
 
     while(1) {
       if ((buf.size = recvfrom(dnsUdpSock,buf.buffer,DNS_BUF_SIZE-1,0,(struct sockaddr*)&buf.addr,&len)) <= 0) {
-        Ns_Log(Error,"nsdns: recvfrom error: %s",strerror(errno));
+        if(dnsDebug > 1) {
+          Ns_Log(Error,"nsdns: recvfrom error: %s",strerror(errno));
+        }
         continue;
       }
       buf.buffer[buf.size] = 0;

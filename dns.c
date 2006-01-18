@@ -122,7 +122,7 @@ dnsLookup(char *name,int type,int *errcode)
         /* Disable only if we have more than one server */
         if(++server->fail_count > 2 && dnsServers->next) {
           server->fail_time = now;
-          Ns_Log(Error,"dnsLookup: %s: nameserver disabled",server->name);
+          Ns_Log(Notice,"dnsLookup: %s: nameserver disabled",server->name);
         }
         server = server->next;
       } else
@@ -130,7 +130,7 @@ dnsLookup(char *name,int type,int *errcode)
       while(server) {
         if(server->fail_time && now - server->fail_time > dnsFailureTimeout) {
           server->fail_count = server->fail_time = 0;
-          Ns_Log(Error,"dnsLookup: %s: nameserver re-enabled",server->name);
+          Ns_Log(Notice,"dnsLookup: %s: nameserver re-enabled",server->name);
         }
         if(!server->fail_time) break;
         server = server->next;
@@ -138,7 +138,7 @@ dnsLookup(char *name,int type,int *errcode)
       Ns_MutexUnlock(&dnsMutex);
       if(!server) break;
 
-      if(dnsDebug > 5) Ns_Log(Error,"dnsLookup: %s: resolving %s...",server->name,name);
+      if(dnsDebug > 5) Ns_Log(Notice,"dnsLookup: %s: resolving %s...",server->name,name);
       saddr.sin_addr.s_addr = server->ipaddr;
       while(retries--) {
         len = sizeof(struct sockaddr_in);
@@ -204,7 +204,7 @@ dnsResolve(char *name,int type,char *server,int timeout,int retries)
         if(dnsDebug > 3) Ns_Log(Error,"dnsResolve: %s: sendto: %s",name,strerror(errno));
         continue;
       }
-      if(dnsDebug > 3) Ns_Log(Error,"dnsResolve: %s: %d: sending to %s, timeout=%d",name,req->id,server,timeout);
+      if(dnsDebug > 3) Ns_Log(Notice,"dnsResolve: %s: %d: sending to %s, timeout=%d",name,req->id,server,timeout);
       tv.tv_usec = 0;
       tv.tv_sec = timeout;
       FD_ZERO(&fds);
@@ -217,7 +217,7 @@ dnsResolve(char *name,int type,char *server,int timeout,int retries)
         if(dnsDebug > 3) Ns_Log(Error,"dnsResolve: %s: recvfrom: %s",name,strerror(errno));
         continue;
       }
-      if(dnsDebug > 3) Ns_Log(Error,"dnsResolve: %s: received %d bytes from %s",name,len,server);
+      if(dnsDebug > 3) Ns_Log(Notice,"dnsResolve: %s: received %d bytes from %s",name,len,server);
       if(!(reply = dnsParsePacket(buf,len))) continue;
       // DNS packet id should be the same
       if(reply->id == req->id) {
@@ -225,7 +225,7 @@ dnsResolve(char *name,int type,char *server,int timeout,int retries)
         close(sock);
         return reply;
       }
-      if(dnsDebug > 3) Ns_Log(Error,"dnsResolve: %s: %d: wrong ID %d from to %s",name,req->id,reply->id,server);
+      if(dnsDebug > 3) Ns_Log(Notice,"dnsResolve: %s: %d: wrong ID %d from to %s",name,req->id,reply->id,server);
       dnsPacketFree(reply,0);
     }
     dnsPacketFree(req,0);
@@ -292,7 +292,7 @@ dnsRecordLog(dnsRecord *rec,int level,char *text, ...)
     Ns_DStringAppend(&ds, "nsdns: ");
     Ns_DStringVPrintf(&ds,text, ap);
     dnsRecordDump(&ds,rec);
-    Ns_Log(level < 0 ? Error : Debug,ds.string);
+    Ns_Log(level < 0 ? Error : Notice,ds.string);
     Ns_DStringFree(&ds);
     va_end(ap);
 }
@@ -399,6 +399,7 @@ dnsRecord *
 dnsRecordCreateA(char *name,unsigned long ipaddr)
 {
     dnsRecord *y = ns_calloc(1,sizeof(dnsRecord));
+
     y->nsize = strlen(name);
     y->name = ns_malloc(y->nsize+1);
     strcpy(y->name,name);
@@ -1174,8 +1175,6 @@ dnsPacketLog(dnsPacket *pkt,int level,char *text, ...)
     va_list ap;
 
     if(level > dnsDebug) return;
-
-    if(level > dnsDebug) return;
     va_start(ap, text);
 
     Ns_DStringInit(&ds);
@@ -1205,7 +1204,7 @@ dnsPacketLog(dnsPacket *pkt,int level,char *text, ...)
     for(y = pkt->nslist;y;y = y->next) dnsRecordDump(&ds,y);
     Ns_DStringPrintf(&ds," ADDITIONAL SECTION: ");
     for(y = pkt->arlist;y;y = y->next) dnsRecordDump(&ds,y);
-    Ns_Log(level < 0 ? Error: Debug,ds.string);
+    Ns_Log(level < 0 ? Error: Notice,ds.string);
     Ns_DStringFree(&ds);
 }
 

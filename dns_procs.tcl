@@ -8,7 +8,8 @@ proc dns_reload { hosts } {
     ns_dns flush
     set count 0
     while { ![eof $fd] } {
-      set line [gets $fd]
+      set line [string trim [gets $fd]]
+      if { $line == "" || [string index $line 0] == "#" } { continue }
       set ipaddr [lindex $line 0]
       foreach name [lrange $line 1 end] {
         ns_dns add $name A $ipaddr 0

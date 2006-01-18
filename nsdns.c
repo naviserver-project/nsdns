@@ -120,7 +120,7 @@ Ns_ModuleInit(char *server, char *module)
     int n,i;
     char *path, *address;
 
-    Ns_Log(Notice, "nsdns module version %s server: %s", VERSION,server);
+    Ns_Log(Notice, "nsdns module version %s server: %s", DNS_VERSION, server);
 
     Ns_RWLockInit(&dnsClientLock);
     Tcl_InitHashTable(&dnsClientList,TCL_ONE_WORD_KEYS);
@@ -168,7 +168,7 @@ Ns_ModuleInit(char *server, char *module)
            (dnsProxySock = socket(AF_INET,SOCK_DGRAM,0)) == -1) {
           close(dnsUdpSock);
           close(dnsTcpSock);
-          Ns_Log(Error,"nsdns: create proxy thread %s:%d: %s",dnsProxyHost,dnsProxyPort,strerror(errno));
+          Ns_Log(Notice,"nsdns: create proxy thread %s:%d: %s",dnsProxyHost,dnsProxyPort,strerror(errno));
           return NS_ERROR;
         }
         Ns_ThreadCreate(DnsProxyThread,0,0,0);
@@ -197,7 +197,7 @@ Ns_ModuleInit(char *server, char *module)
       Ns_Log(Notice,"nsdns: SEGV and Panic trapping is activated");
     }
     Ns_MutexSetName2(&dnsProxyMutex,"nsdns","proxy");
-    Ns_Log(Notice,"nsdns: version %s listening on %s:%d, FD %d:%d",VERSION,address?address:"0.0.0.0",dnsPort,dnsUdpSock,dnsTcpSock);
+    Ns_Log(Notice,"nsdns: version %s listening on %s:%d, FD %d:%d",DNS_VERSION,address?address:"0.0.0.0",dnsPort,dnsUdpSock,dnsTcpSock);
     Ns_TclRegisterTrace(server, DnsInterpInit, 0, NS_TCL_TRACE_CREATE);
     return NS_OK;
 }
@@ -553,14 +553,14 @@ DnsQueueListenThread(void *arg)
     while(1) {
       if ((buf.size = recvfrom(dnsUdpSock,buf.buffer,DNS_BUF_SIZE-1,0,(struct sockaddr*)&buf.addr,&len)) <= 0) {
         if(dnsDebug > 1) {
-          Ns_Log(Error,"nsdns: recvfrom error: %s",strerror(errno));
+          Ns_Log(Notice,"nsdns: recvfrom error: %s",strerror(errno));
         }
         continue;
       }
       buf.buffer[buf.size] = 0;
       gettimeofday(&recv_time,0);
       if(dnsDebug > 0) {
-        Ns_Log(Debug,"nsdns: received %d bytes from %s",buf.size,ns_inet_ntoa(buf.addr.sin_addr));
+        Ns_Log(Notice,"nsdns: received %d bytes from %s",buf.size,ns_inet_ntoa(buf.addr.sin_addr));
       }
       /*
        *  Link new job into the queue
@@ -658,7 +658,7 @@ DnsTcpListen(SOCKET sock,void *si,int when)
     switch(when) {
      case NS_SOCK_READ:
          if((arg.sock = Ns_SockAccept(sock,(struct sockaddr*)&arg.saddr,&saddr_len)) == INVALID_SOCKET) break;
-         if(dnsDebug > 3) Ns_Log(Error,"DnsTcpListen: connection from %s",ns_inet_ntoa(arg.saddr.sin_addr));
+         if(dnsDebug > 3) Ns_Log(Notice,"DnsTcpListen: connection from %s",ns_inet_ntoa(arg.saddr.sin_addr));
          Ns_ThreadCreate(DnsTcpThread,(void *)&arg,0,0);
          return NS_TRUE;
     }
@@ -771,7 +771,7 @@ DnsProxyThread(void *arg)
           Ns_Log(Error,"nsdns: recvfrom error %s: %s",ns_inet_ntoa(addr.sin_addr),strerror(errno));
         continue;
       }
-      if(dnsDebug > 3) Ns_Log(Error,"DnsProxyThread: received %d bytes from %s",len,ns_inet_ntoa(dnsProxyAddr.sin_addr));
+      if(dnsDebug > 3) Ns_Log(Notice,"DnsProxyThread: received %d bytes from %s",len,ns_inet_ntoa(dnsProxyAddr.sin_addr));
       Ns_MutexLock(&dnsProxyMutex);
       for(req = dnsProxyQueue;req;req = req->next) {
         /* Find request with received ID and forward reply back to the client */
@@ -921,9 +921,10 @@ dnsRequestHandle(dnsRequest *req)
                }
                // First item deleted, update cache entry value
                if(qcache == qstart) {
-                 qstart = next;
-                 qstart->prev = 0;
-                 Tcl_SetHashValue(hrec,qstart);
+                 if((qstart = next)) {
+                   qstart->prev = 0;
+                   Tcl_SetHashValue(hrec,qstart);
+                 }
                }
                qcache = next;
                continue;

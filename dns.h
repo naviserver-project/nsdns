@@ -23,7 +23,7 @@
  * 
  */
 
-#define VERSION "0.7.7"
+#define DNS_VERSION "0.7.7"
 
 // DNS flags
 #define DNS_TCP                 0x0001

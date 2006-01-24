@@ -801,10 +801,11 @@ dnsRead(int sock, void *vbuf, int len)
 {
     int nread,n;
     char *buf = (char *) vbuf;
+    Ns_Time timeout = {dnsReadTimeout, 0};
 
     nread = len;
     while(len > 0) {
-      n = Ns_SockRecv(sock,buf,len,dnsReadTimeout);
+      n = Ns_SockRecv(sock,buf,len,&timeout);
       if(n <= 0) return -1;
       len -= n;
       buf += n;
@@ -817,11 +818,12 @@ dnsWrite(int sock, void *vbuf, int len)
 {
     int nwrote,n;
     char *buf;
+    Ns_Time timeout = {dnsWriteTimeout, 0};
 
     nwrote = len;
     buf = vbuf;
     while(len > 0) {
-      n = Ns_SockSend(sock,buf,len,dnsWriteTimeout);
+      n = Ns_SockSend(sock,buf,len,&timeout);
       if(n <= 0) return -1;
       len -= n;
       buf += n;

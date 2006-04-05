@@ -15,7 +15,7 @@ OBJS     = nsdns.o dns.o
 #
 # Modules to install
 #
-PROCS   = nsmib_procs.tcl nsradius_procs.tcl
+PROCS   = dns_procs.tcl
 
 INSTALL += install-procs
 

@@ -548,6 +548,7 @@ DnsQueueListenThread(void *arg)
     struct timeval recv_time;
     int id = 0;
 
+    memset(&buf, 0, sizeof(buf));
     Ns_ThreadSetName("nsdns:thread");
 
     while(1) {
@@ -566,7 +567,10 @@ DnsQueueListenThread(void *arg)
        *  Link new job into the queue
        */
       Ns_MutexLock(&dnsQueues[id].lock);
-      if((req = dnsQueues[id].freelist)) dnsQueues[id].freelist = req->next;
+      if((req = dnsQueues[id].freelist)) {
+        dnsQueues[id].freelist = req->next;
+        req->next = 0;
+      }
       if(!req) req = ns_calloc(1,sizeof(dnsRequest));
       memcpy(req,&buf,sizeof(buf));
       req->recv_time = recv_time;

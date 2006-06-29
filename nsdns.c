@@ -1,4 +1,4 @@
-/* 
+/*
  * The contents of this file are subject to the Mozilla Public License
  * Version 1.1(the "License"); you may not use this file except in
  * compliance with the License. You may obtain a copy of the License at
@@ -20,7 +20,7 @@
  * version of this file under either the License or the GPL.
  *
  * Author Vlad Seryakov vlad@crystalballinc.com
- * 
+ *
  */
 
 #include "ns.h"
@@ -157,6 +157,7 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
     dnsDefaultHost = Ns_ConfigGetValue(path, "defaulthost");
     // Resolving dns servers
     dnsInit("nameserver", Ns_ConfigGetValue(path, "nameserver"), 0);
+
     /* If no port specified it will be just client dns resolver module */
     if (dnsPort > 0) {
         // UDP socket
@@ -232,8 +233,9 @@ static void DnsPanic(const char *fmt, ...)
     va_end(ap);
     close(dnsUdpSock);
     close(dnsTcpSock);
-    while (1)
+    while (1) {
         sleep(1);
+    }
 }
 
 static void DnsSegv(int sig)
@@ -241,8 +243,9 @@ static void DnsSegv(int sig)
     close(dnsUdpSock);
     close(dnsTcpSock);
     Ns_Log(Error, "nsdns: SIGSEGV received %d", getpid());
-    while (1)
+    while (1) {
         sleep(1);
+    }
 }
 
 static int DnsCmd(ClientData arg, Tcl_Interp * interp, int objc, Tcl_Obj * CONST objv[])
@@ -571,7 +574,7 @@ static void DnsQueueListenThread(void *arg)
     Ns_ThreadSetName("nsdns:thread");
 
     while (1) {
-        if ((buf.size = recvfrom(dnsUdpSock, buf.buffer, DNS_BUF_SIZE - 1, 0, (struct sockaddr *) &buf.addr, &len)) <= 0) {
+        if ((buf.size = recvfrom(dnsUdpSock, buf.buffer, DNS_BUF_SIZE - 1, 0, (struct sockaddr *) &buf.addr, (socklen_t*)&len)) <= 0) {
             if (dnsDebug > 1) {
                 Ns_Log(Notice, "nsdns: recvfrom error: %s", strerror(errno));
             }
@@ -590,22 +593,27 @@ static void DnsQueueListenThread(void *arg)
             dnsQueues[id].freelist = req->next;
             req->next = 0;
         }
-        if (!req)
+        if (!req) {
             req = ns_calloc(1, sizeof(dnsRequest));
+        }
         memcpy(req, &buf, sizeof(buf));
         req->recv_time = recv_time;
-        if (dnsQueues[id].tail)
+        if (dnsQueues[id].tail) {
             dnsQueues[id].tail->next = req;
+        }
         dnsQueues[id].tail = req;
-        if (!dnsQueues[id].head)
+        if (!dnsQueues[id].head) {
             dnsQueues[id].head = req;
-        if (++dnsQueues[id].size > dnsQueues[id].maxsize)
+        }
+        if (++dnsQueues[id].size > dnsQueues[id].maxsize) {
             dnsQueues[id].maxsize = dnsQueues[id].size;
+        }
         dnsQueues[id].requests++;
         Ns_CondBroadcast(&dnsQueues[id].cond);
         Ns_MutexUnlock(&dnsQueues[id].lock);
-        if (++id >= dnsThreads)
+        if (++id >= dnsThreads) {
             id = 0;
+        }
     }
 }
 
@@ -634,8 +642,9 @@ static void DnsQueueRequestThread(void *arg)
          */
         req = queue->head;
         queue->head = req->next;
-        if (queue->tail == req)
+        if (queue->tail == req) {
             queue->tail = 0;
+        }
         queue->size--;
         Ns_MutexUnlock(&queue->lock);
         rt = wt = 0;
@@ -669,10 +678,12 @@ static void DnsQueueRequestThread(void *arg)
             req->next = queue->freelist;
             queue->freelist = req;
         }
-        if (rt > queue->rtime)
+        if (rt > queue->rtime) {
             queue->rtime = rt;
-        if (wt > queue->wtime)
+        }
+        if (wt > queue->wtime) {
             queue->wtime = wt;
+        }
     }
 }
 
@@ -686,10 +697,12 @@ static int DnsTcpListen(SOCKET sock, void *si, int when)
 
     switch (when) {
     case NS_SOCK_READ:
-        if ((arg.sock = Ns_SockAccept(sock, (struct sockaddr *) &arg.saddr, &saddr_len)) == INVALID_SOCKET)
+        if ((arg.sock = Ns_SockAccept(sock, (struct sockaddr *) &arg.saddr, &saddr_len)) == INVALID_SOCKET) {
             break;
-        if (dnsDebug > 3)
+        }
+        if (dnsDebug > 3) {
             Ns_Log(Notice, "DnsTcpListen: connection from %s", ns_inet_ntoa(arg.saddr.sin_addr));
+        }
         Ns_ThreadCreate(DnsTcpThread, (void *) &arg, 0, 0);
         return NS_TRUE;
     }
@@ -792,22 +805,26 @@ static void DnsProxyThread(void *arg)
         timeout.tv_sec = 1;
         FD_ZERO(&rfd);
         FD_SET(dnsProxySock, &rfd);
-        if (select(dnsProxySock + 1, &rfd, 0, 0, &timeout) <= 0)
-            continue;
-        len = sizeof(struct sockaddr_in);
-        if ((len = recvfrom(dnsProxySock, buf, DNS_BUF_SIZE, 0, (struct sockaddr *) &addr, &len)) <= 0 ||
-            addr.sin_addr.s_addr != dnsProxyAddr.sin_addr.s_addr) {
-            if (errno && errno != EAGAIN && errno != EINTR)
-                Ns_Log(Error, "nsdns: recvfrom error %s: %s", ns_inet_ntoa(addr.sin_addr), strerror(errno));
+        if (select(dnsProxySock + 1, &rfd, 0, 0, &timeout) <= 0) {
             continue;
         }
-        if (dnsDebug > 3)
+        len = sizeof(struct sockaddr_in);
+        if ((len = recvfrom(dnsProxySock, buf, DNS_BUF_SIZE, 0, (struct sockaddr *) &addr, (socklen_t*)&len)) <= 0 ||
+            addr.sin_addr.s_addr != dnsProxyAddr.sin_addr.s_addr) {
+            if (errno && errno != EAGAIN && errno != EINTR) {
+                Ns_Log(Error, "nsdns: recvfrom error %s: %s", ns_inet_ntoa(addr.sin_addr), strerror(errno));
+            }
+            continue;
+        }
+        if (dnsDebug > 3) {
             Ns_Log(Notice, "DnsProxyThread: received %d bytes from %s", len, ns_inet_ntoa(dnsProxyAddr.sin_addr));
+        }
         Ns_MutexLock(&dnsProxyMutex);
         for (req = dnsProxyQueue; req; req = req->next) {
             /* Find request with received ID and forward reply back to the client */
-            if (req->req->id != ntohs(*((unsigned short *) buf)))
+            if (req->req->id != ntohs(*((unsigned short *) buf))) {
                 continue;
+            }
             *((unsigned short *) buf) = htons(req->proxy_id);
             dnsPacketFree(req->reply, 1);
             if ((req->reply = dnsParsePacket(buf, len))) {
@@ -819,12 +836,14 @@ static void DnsProxyThread(void *arg)
                 dnsRecordCache(req->client, &req->reply->arlist);
             }
             /* Remove form the queue */
-            if (!req->prev)
+            if (!req->prev) {
                 dnsProxyQueue = req->next;
-            else
+            } else {
                 req->prev->next = req->next;
-            if (req->next)
+            }
+            if (req->next) {
                 req->next->prev = req->prev;
+            }
             dnsRequestFree(req);
             break;
         }
@@ -841,8 +860,9 @@ static int dnsRead(int sock, void *vbuf, int len)
     nread = len;
     while (len > 0) {
         n = Ns_SockRecv(sock, buf, len, &timeout);
-        if (n <= 0)
+        if (n <= 0) {
             return -1;
+        }
         len -= n;
         buf += n;
     }
@@ -859,8 +879,9 @@ static int dnsWrite(int sock, void *vbuf, int len)
     buf = vbuf;
     while (len > 0) {
         n = Ns_SockSend(sock, buf, len, &timeout);
-        if (n <= 0)
+        if (n <= 0) {
             return -1;
+        }
         len -= n;
         buf += n;
     }
@@ -872,9 +893,9 @@ static void *dnsRequestCreate(int sock, char *buf, int len)
     dnsPacket *pkt;
     dnsRequest *req;
 
-    if (!(pkt = dnsParsePacket(buf, len)))
+    if (!(pkt = dnsParsePacket(buf, len))) {
         return 0;
-
+    }
     // Allocate request structure
     req = ns_calloc(1, sizeof(dnsRequest));
     req->sock = sock;
@@ -887,8 +908,9 @@ static void *dnsRequestCreate(int sock, char *buf, int len)
 
 static void dnsRequestFree(dnsRequest * req)
 {
-    if (!req)
+    if (!req) {
         return;
+    }
     //Ns_Log(Debug,"rfree[%d]: %x, %x %x",getpid(),req,req->req,req->reply);
     dnsPacketFree(req->req, 3);
     dnsPacketFree(req->reply, 4);
@@ -909,8 +931,9 @@ static int dnsRequestHandle(dnsRequest * req)
     case OPCODE_QUERY:
         Ns_RWLockRdLock(&req->client->lock);
         for (qrec = req->req->qdlist; qrec; qrec = qrec->next) {
-            if (!qrec->name)
+            if (!qrec->name) {
                 continue;
+            }
             nsize = qrec->nsize;
             switch (qrec->type) {
             case DNS_TYPE_NAPTR:
@@ -919,15 +942,18 @@ static int dnsRequestHandle(dnsRequest * req)
                 while (*ptr) {
                     // Search only those names that we have in cache
                     if (nsize > sizeof(req->client->rstats) || req->client->rstats[nsize]) {
-                        if ((hrec = Tcl_FindHashEntry(&req->client->list, ptr)))
+                        if ((hrec = Tcl_FindHashEntry(&req->client->list, ptr))) {
                             break;
+                        }
                     }
                     for (; *ptr && *ptr != '.'; ptr++, nsize--);
-                    if (*ptr == '.')
+                    if (*ptr == '.') {
                         ptr++, nsize--;
+                    }
                 }
-                if (!hrec)
+                if (!hrec) {
                     continue;
+                }
                 break;
 
             default:
@@ -936,11 +962,13 @@ static int dnsRequestHandle(dnsRequest * req)
                     char domain[255];
                     snprintf(domain, sizeof(domain) - 1, "*.%s", qrec->name);
                     if (!(hrec = Tcl_FindHashEntry(&req->client->list, domain))) {
-                        if (!(ptr = strchr(qrec->name, '.')))
+                        if (!(ptr = strchr(qrec->name, '.'))) {
                             continue;
+                        }
                         snprintf(domain, sizeof(domain) - 1, "*%s", ptr);
-                        if (!(hrec = Tcl_FindHashEntry(&req->client->list, domain)))
+                        if (!(hrec = Tcl_FindHashEntry(&req->client->list, domain))) {
                             continue;
+                        }
                     }
                 }
             }
@@ -955,10 +983,12 @@ static int dnsRequestHandle(dnsRequest * req)
                     if (qcache->timestamp && qcache->ttl && qcache->timestamp + qcache->ttl < now) {
                         dnsRecord *next = qcache->next;
                         dnsRecordLog(qcache, 2, "Record expired:");
-                        if (qcache->prev)
+                        if (qcache->prev) {
                             qcache->prev->next = qcache->next;
-                        if (qcache->next)
+                        }
+                        if (qcache->next) {
                             qcache->next->prev = qcache->prev;
+                        }
                         dnsRecordFree(qcache);
                         if (!qcache->next && !qcache->prev) {
                             Tcl_DeleteHashEntry(hrec);
@@ -985,10 +1015,12 @@ static int dnsRequestHandle(dnsRequest * req)
                                                dnsRecordCreate(qcache));
                         // Put IP address of the nameserver into additional section
                         if ((nrec = Tcl_FindHashEntry(&req->client->list, qcache->data.name))) {
-                            for (ncache = Tcl_GetHashValue(nrec); ncache; ncache = ncache->next)
-                                if (ncache->type == DNS_TYPE_A)
+                            for (ncache = Tcl_GetHashValue(nrec); ncache; ncache = ncache->next) {
+                                if (ncache->type == DNS_TYPE_A) {
                                     dnsPacketAddRecord(req->reply, &req->reply->arlist, &req->reply->arcount,
                                                        dnsRecordCreate(ncache));
+                                }
+                            }
                         }
                         break;
 
@@ -1004,16 +1036,19 @@ static int dnsRequestHandle(dnsRequest * req)
                             // Build regexp from 3 parts
                             ncache->data.naptr->regexp = str = ns_malloc(qrec->nsize + strlen(ptr) + 1);
                             // Before phone
-                            for (ptr = qcache->data.naptr->regexp; ptr <= qcache->data.naptr->regexp_p1;)
+                            for (ptr = qcache->data.naptr->regexp; ptr <= qcache->data.naptr->regexp_p1;) {
                                 *str++ = *ptr++;
+                            }
                             // Phone itself
                             for (ptr = &qrec->name[qrec->nsize - 1]; ptr >= qrec->name; ptr--) {
-                                if (isdigit(*ptr) && (ptr == qrec->name || *(ptr - 1) == '.'))
+                                if (isdigit(*ptr) && (ptr == qrec->name || *(ptr - 1) == '.')) {
                                     *str++ = *ptr;
+                                }
                             }
                             // After phone
-                            for (ptr = qcache->data.naptr->regexp_p2; *ptr;)
+                            for (ptr = qcache->data.naptr->regexp_p2; *ptr;) {
                                 *str++ = *ptr++;
+                            }
                             *str = 0;
                             dnsPacketAddRecord(req->reply, &req->reply->anlist, &req->reply->ancount, ncache);
                             break;
@@ -1024,8 +1059,9 @@ static int dnsRequestHandle(dnsRequest * req)
                     }
                     dnsRecordLog(qcache, 4, "Record matched:");
                     // Use cached rcode
-                    if (qcache->rcode)
+                    if (qcache->rcode) {
                         DNS_SET_RCODE(req->reply->u, qcache->rcode);
+                    }
                 }
                 qend = qcache;
                 qcache = qcache->next;
@@ -1048,8 +1084,9 @@ static int dnsRequestHandle(dnsRequest * req)
                 Ns_MutexLock(&dnsProxyMutex);
                 req->prev = 0;
                 req->next = dnsProxyQueue;
-                if (req->next)
+                if (req->next) {
                     req->next->prev = req;
+                }
                 dnsProxyQueue = req;
                 Ns_CondBroadcast(&dnsProxyCond);
                 Ns_MutexUnlock(&dnsProxyMutex);
@@ -1111,8 +1148,9 @@ static void dnsRecordCache(dnsClient * client, dnsRecord ** list)
         } else {
             hlist = Tcl_GetHashValue(hrec);
             if (!dnsRecordSearch(hlist, drec, 1)) {
-                if ((drec->next = hlist))
+                if ((drec->next = hlist)) {
                     hlist->prev = drec;
+                }
                 Tcl_SetHashValue(hrec, drec);
             } else {
                 dnsRecordFree(drec);
@@ -1121,8 +1159,9 @@ static void dnsRecordCache(dnsClient * client, dnsRecord ** list)
         switch (drec->type) {
         case DNS_TYPE_NAPTR:
             // Update route statistics, mark that we have routes with that length in the cache
-            if (drec->nsize < sizeof(client->rstats))
+            if (drec->nsize < sizeof(client->rstats)) {
                 client->rstats[drec->nsize]++;
+            }
             break;
         }
         Ns_RWLockUnlock(&client->lock);
@@ -1167,8 +1206,9 @@ static dnsClient *DnsClientFind(char *host, struct in_addr addr)
     Ns_RWLockUnlock(&dnsClientLock);
     if (entry) {
         client = Tcl_GetHashValue(entry);
-        if (client->link)
+        if (client->link) {
             client = client->link;
+        }
         return client;
     }
     return &dnsClientDflt;
@@ -1187,10 +1227,12 @@ static int DnsClientResolve(char *host, struct in_addr *addr)
 {
     struct sockaddr_in sa;
 
-    if (!host)
+    if (!host) {
         host = Ns_InfoHostname();
-    if (Ns_GetSockAddr(&sa, host, 0) != NS_OK)
+    }
+    if (Ns_GetSockAddr(&sa, host, 0) != NS_OK) {
         return NS_ERROR;
+    }
     *addr = sa.sin_addr;
     return NS_OK;
 }

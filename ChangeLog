@@ -1,3 +1,7 @@
+2007-03-29 Vlad Seryakov vlad@crystalballinc.com
+
+        * added cachettl for cached records
+
 2006-05-28 Vlad Seryakov vlad@crystalballinc.com
 
 	* fixed segv in DNS receive code
@@ -56,7 +60,7 @@
 
 2003-05-16 Vlad Seryakov vlad@crystalballinc.com
 
-	* another memory overflow fixed 
+	* another memory overflow fixed
 
 2003-04-20 Vlad Seryakov vlad@crystalballinc.com
 
@@ -64,7 +68,7 @@
 
 2003-03-14 Vlad Seryakov vlad@crystalballinc.com
 
-	* nasty bug with dynamic buffer reallocation caused 
+	* nasty bug with dynamic buffer reallocation caused
           DNS packets corruption
 
 2003-03-06 Vlad Seryakov vlad@crystalballinc.com

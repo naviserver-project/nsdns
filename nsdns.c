@@ -94,6 +94,7 @@ static int dnsReadTimeout;
 static int dnsWriteTimeout;
 static int dnsProxyTimeout;
 static int dnsNegativeTTL;
+static int dnsCacheTTL;
 static int dnsUdpSock;
 static int dnsTcpSock;
 static int dnsProxyPort;
@@ -132,28 +133,42 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
     path = Ns_ConfigGetPath(server, module, NULL);
     address = Ns_ConfigGetValue(path, "address");
 
-    if (!Ns_ConfigGetInt(path, "flags", &dnsFlags))
+    if (!Ns_ConfigGetInt(path, "flags", &dnsFlags)) {
         dnsFlags = 0;
-    if (!Ns_ConfigGetInt(path, "debug", &dnsDebug))
+    }
+    if (!Ns_ConfigGetInt(path, "debug", &dnsDebug)) {
         dnsDebug = 0;
-    if (!Ns_ConfigGetInt(path, "port", &dnsPort))
+    }
+    if (!Ns_ConfigGetInt(path, "port", &dnsPort)) {
         dnsPort = 5353;
-    if (!Ns_ConfigGetInt(path, "ttl", &dnsTTL))
+    }
+    if (!Ns_ConfigGetInt(path, "ttl", &dnsTTL)) {
         dnsTTL = 86400;
-    if (!Ns_ConfigGetInt(path, "negativettl", &dnsNegativeTTL))
+    }
+    if (!Ns_ConfigGetInt(path, "negativettl", &dnsNegativeTTL)) {
         dnsNegativeTTL = 3600;
-    if (!Ns_ConfigGetInt(path, "rcvbuf", &dnsRcvBuf))
+    }
+    if (!Ns_ConfigGetInt(path, "cachettl", &dnsCacheTTL)) {
+        dnsCacheTTL = 0;
+    }
+    if (!Ns_ConfigGetInt(path, "rcvbuf", &dnsRcvBuf)) {
         dnsRcvBuf = 0;
-    if (!Ns_ConfigGetInt(path, "readtimeout", &dnsReadTimeout))
+    }
+    if (!Ns_ConfigGetInt(path, "readtimeout", &dnsReadTimeout)) {
         dnsReadTimeout = 30;
-    if (!Ns_ConfigGetInt(path, "writetimeout", &dnsWriteTimeout))
+    }
+    if (!Ns_ConfigGetInt(path, "writetimeout", &dnsWriteTimeout)) {
         dnsWriteTimeout = 30;
-    if (!Ns_ConfigGetInt(path, "proxytimeout", &dnsProxyTimeout))
+    }
+    if (!Ns_ConfigGetInt(path, "proxytimeout", &dnsProxyTimeout)) {
         dnsProxyTimeout = 3;
-    if (!Ns_ConfigGetInt(path, "proxyretries", &dnsProxyRetries))
+    }
+    if (!Ns_ConfigGetInt(path, "proxyretries", &dnsProxyRetries)) {
         dnsProxyRetries = 2;
-    if (!Ns_ConfigGetInt(path, "threads", &dnsThreads))
+    }
+    if (!Ns_ConfigGetInt(path, "threads", &dnsThreads)) {
         dnsThreads = 1;
+    }
     dnsDefaultHost = Ns_ConfigGetValue(path, "defaulthost");
     // Resolving dns servers
     dnsInit("nameserver", Ns_ConfigGetValue(path, "nameserver"), 0);
@@ -173,8 +188,9 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
         // Use NS callback facility because TCP is not going to be very busy
         Ns_SockCallback(dnsTcpSock, DnsTcpListen, 0, NS_SOCK_READ | NS_SOCK_EXIT | NS_SOCK_EXCEPTION);
         // DNS proxy thread
-        if (!Ns_ConfigGetInt(path, "proxyport", &dnsProxyPort))
+        if (!Ns_ConfigGetInt(path, "proxyport", &dnsProxyPort)) {
             dnsProxyPort = 53;
+        }
         if ((dnsProxyHost = Ns_ConfigGetValue(path, "proxyhost"))) {
             if (Ns_GetSockAddr(&dnsProxyAddr, dnsProxyHost, dnsProxyPort) != NS_OK ||
                 (dnsProxySock = socket(AF_INET, SOCK_DGRAM, 0)) == -1) {
@@ -292,8 +308,9 @@ static int DnsCmd(ClientData arg, Tcl_Interp * interp, int objc, Tcl_Obj * CONST
         }
         client = DnsClientFind(Tcl_GetString(objv[2]), addr);
         // Create new client
-        if (client == &dnsClientDflt)
+        if (client == &dnsClientDflt) {
             client = DnsClientCreate(Tcl_GetString(objv[2]));
+        }
         argc--;
         argp++;
 
@@ -305,8 +322,9 @@ static int DnsCmd(ClientData arg, Tcl_Interp * interp, int objc, Tcl_Obj * CONST
         switch (dnsType(Tcl_GetString(objv[argp + 1]))) {
         case DNS_TYPE_A:
             drec = dnsRecordCreateA(Tcl_GetString(objv[argp]), inet_addr(Tcl_GetString(objv[argp + 2])));
-            if (objc > 5)
+            if (objc > 5) {
                 drec->ttl = atoi(Tcl_GetString(objv[argp + 3]));
+            }
             break;
         case DNS_TYPE_MX:
             if (argc < 6) {
@@ -315,8 +333,9 @@ static int DnsCmd(ClientData arg, Tcl_Interp * interp, int objc, Tcl_Obj * CONST
             }
             drec = dnsRecordCreateMX(Tcl_GetString(objv[argp]), atoi(Tcl_GetString(objv[argp + 2])),
                                      Tcl_GetString(objv[argp + 3]));
-            if (argc > 6)
+            if (argc > 6) {
                 drec->ttl = atoi(Tcl_GetString(objv[argp + 4]));
+            }
             break;
         case DNS_TYPE_NAPTR:
             if (argc < 9) {
@@ -327,23 +346,27 @@ static int DnsCmd(ClientData arg, Tcl_Interp * interp, int objc, Tcl_Obj * CONST
                                         atoi(Tcl_GetString(objv[argp + 3])),
                                         Tcl_GetString(objv[argp + 4]), Tcl_GetString(objv[argp + 5]),
                                         Tcl_GetString(objv[argp + 6]), argc > 9 ? Tcl_GetString(objv[argp + 7]) : 0);
-            if (argc > 10)
+            if (argc > 10) {
                 drec->ttl = atoi(Tcl_GetString(objv[argp + 8]));
+            }
             break;
         case DNS_TYPE_NS:
             drec = dnsRecordCreateNS(Tcl_GetString(objv[argp]), Tcl_GetString(objv[argp + 2]));
-            if (argc > 5)
+            if (argc > 5) {
                 drec->ttl = atoi(Tcl_GetString(objv[argp + 3]));
+            }
             break;
         case DNS_TYPE_PTR:
             drec = dnsRecordCreatePTR(Tcl_GetString(objv[argp]), Tcl_GetString(objv[argp + 2]));
-            if (argc > 5)
+            if (argc > 5) {
                 drec->ttl = atoi(Tcl_GetString(objv[argp + 3]));
+            }
             break;
         case DNS_TYPE_CNAME:
             drec = dnsRecordCreateCNAME(Tcl_GetString(objv[argp]), Tcl_GetString(objv[argp + 2]));
-            if (argc > 5)
+            if (argc > 5) {
                 drec->ttl = atoi(Tcl_GetString(objv[argp + 3]));
+            }
             break;
         default:
             Tcl_AppendResult(interp, "wrong record type, should be A,MX,PTR,CNAME,NS", 0);
@@ -360,8 +383,9 @@ static int DnsCmd(ClientData arg, Tcl_Interp * interp, int objc, Tcl_Obj * CONST
         }
         client = DnsClientFind(Tcl_GetString(objv[2]), addr);
         // Ignore unknown clients
-        if (client == &dnsClientDflt)
+        if (client == &dnsClientDflt) {
             break;
+        }
         argc--;
         argp++;
 
@@ -387,8 +411,9 @@ static int DnsCmd(ClientData arg, Tcl_Interp * interp, int objc, Tcl_Obj * CONST
                 drec = drec->next;
             }
             // Update rstats
-            if (i < sizeof(client->rstats))
+            if (i < sizeof(client->rstats)) {
                 client->rstats[i]--;
+            }
             client->rcount--;
         }
         Ns_RWLockUnlock(&client->lock);
@@ -401,8 +426,9 @@ static int DnsCmd(ClientData arg, Tcl_Interp * interp, int objc, Tcl_Obj * CONST
         }
         client = DnsClientFind(Tcl_GetString(objv[2]), addr);
         // Ignore unknown clients
-        if (client == &dnsClientDflt)
+        if (client == &dnsClientDflt) {
             break;
+        }
         argc--;
         argp++;
 
@@ -429,9 +455,11 @@ static int DnsCmd(ClientData arg, Tcl_Interp * interp, int objc, Tcl_Obj * CONST
                 Tcl_AppendElement(interp, ns_inet_ntoa(addr));
                 sprintf(tmp, "%lu", client->rcount);
                 Tcl_AppendElement(interp, tmp);
-                for (ptr = stats; *ptr; ptr++)
-                    if (*ptr == '\n')
+                for (ptr = stats; *ptr; ptr++) {
+                    if (*ptr == '\n') {
                         *ptr = ',';
+                    }
+                }
                 Tcl_AppendElement(interp, stats);
                 hrec = Tcl_NextHashEntry(&search);
                 Tcl_Free(stats);
@@ -453,8 +481,9 @@ static int DnsCmd(ClientData arg, Tcl_Interp * interp, int objc, Tcl_Obj * CONST
 
     case cmdList:{
             Tcl_Obj *list = Tcl_NewListObj(0, 0);
-            if (objc > 2)
+            if (objc > 2) {
                 client = DnsClientFind(Tcl_GetString(objv[2]), addr);
+            }
             Ns_RWLockRdLock(&client->lock);
             hrec = Tcl_FirstHashEntry(&client->list, &search);
             while (hrec) {
@@ -470,8 +499,9 @@ static int DnsCmd(ClientData arg, Tcl_Interp * interp, int objc, Tcl_Obj * CONST
         if (objc > 2) {
             client = DnsClientFind(Tcl_GetString(objv[2]), addr);
             // Ignore unknown clients
-            if (client == &dnsClientDflt)
+            if (client == &dnsClientDflt) {
                 break;
+            }
         }
         Ns_RWLockWrLock(&client->lock);
         hrec = Tcl_FirstHashEntry(&client->list, &search);
@@ -521,12 +551,15 @@ static int DnsCmd(ClientData arg, Tcl_Interp * interp, int objc, Tcl_Obj * CONST
                 return TCL_ERROR;
             }
             for (i = 3; i < objc - 1; i += 2) {
-                if (!strcmp("-server", Tcl_GetString(objv[i])))
+                if (!strcmp("-server", Tcl_GetString(objv[i]))) {
                     qserver = Tcl_GetString(objv[i + 1]);
-                else if (!strcmp("-type", Tcl_GetString(objv[i])))
+                } else
+                if (!strcmp("-type", Tcl_GetString(objv[i]))) {
                     qtype = dnsType(Tcl_GetString(objv[i + 1]));
-                else if (!strcmp("-timeout", Tcl_GetString(objv[i])))
+                } else
+                if (!strcmp("-timeout", Tcl_GetString(objv[i]))) {
                     timeout = atoi(Tcl_GetString(objv[i + 1]));
+                }
             }
             if ((reply = dnsResolve(Tcl_GetString(objv[2]), qtype, qserver, timeout, 3))) {
                 Tcl_Obj *list = Tcl_NewListObj(0, 0);
@@ -547,8 +580,9 @@ static int DnsCmd(ClientData arg, Tcl_Interp * interp, int objc, Tcl_Obj * CONST
                 Tcl_WrongNumArgs(interp, 1, objv, "hostname ?type?");
                 return TCL_ERROR;
             }
-            if (objc > 3)
+            if (objc > 3) {
                 qtype = dnsType(Tcl_GetString(objv[3]));
+            }
             if ((reply = dnsLookup(Tcl_GetString(objv[2]), qtype, 0))) {
                 Tcl_Obj *list = Tcl_NewListObj(0, 0);
                 Tcl_ListObjAppendElement(interp, list, dnsRecordCreateTclObj(interp, reply->anlist));
@@ -651,7 +685,7 @@ static void DnsQueueRequestThread(void *arg)
         gettimeofday(&req->start_time, 0);
         req->sock = dnsUdpSock;
         // Allocate request structure
-        if ((req->req = dnsParsePacket(req->buffer, req->size))) {
+        if ((req->req = dnsParsePacket((unsigned char*)req->buffer, req->size))) {
             // Prepare reply header
             req->reply = dnsPacketCreateReply(req->req);
             req->client = DnsClientFind(0, req->addr.sin_addr);
@@ -776,12 +810,14 @@ static void DnsProxyThread(void *arg)
                 /* Reached max request limit, reply with not found code */
                 if (req->proxy_count >= dnsProxyRetries) {
                     dnsRequest *next = req->next;
-                    if (!req->prev)
+                    if (!req->prev) {
                         dnsProxyQueue = req->next;
-                    else
+                    } else {
                         req->prev->next = req->next;
-                    if (req->next)
+                    }
+                    if (req->next) {
                         req->next->prev = req->prev;
+                    }
                     DNS_SET_RCODE(req->reply->u, RCODE_SRVFAIL);
                     req->req->qdlist->rcode = RCODE_SRVFAIL;
                     dnsRecordCache(req->client, &req->req->qdlist);
@@ -827,7 +863,7 @@ static void DnsProxyThread(void *arg)
             }
             *((unsigned short *) buf) = htons(req->proxy_id);
             dnsPacketFree(req->reply, 1);
-            if ((req->reply = dnsParsePacket(buf, len))) {
+            if ((req->reply = dnsParsePacket((unsigned char*)buf, len))) {
                 dnsPacketLog(req->reply, 6, "Proxy reply received:");
                 dnsRequestSend(req);
                 /* Save reply in our cache */
@@ -893,7 +929,7 @@ static void *dnsRequestCreate(int sock, char *buf, int len)
     dnsPacket *pkt;
     dnsRequest *req;
 
-    if (!(pkt = dnsParsePacket(buf, len))) {
+    if (!(pkt = dnsParsePacket((unsigned char*)buf, len))) {
         return 0;
     }
     // Allocate request structure
@@ -972,8 +1008,9 @@ static int dnsRequestHandle(dnsRequest * req)
                     }
                 }
             }
-            if (!(qcache = Tcl_GetHashValue(hrec)))
+            if (!(qcache = Tcl_GetHashValue(hrec))) {
                 continue;
+            }
             qend = 0;
             qstart = qcache;
             while (qcache) {
@@ -1140,6 +1177,11 @@ static void dnsRecordCache(dnsClient * client, dnsRecord ** list)
         *list = drec->next;
         drec->timestamp = now;
         drec->next = drec->prev = 0;
+        // Cache only if record has ttl and its ttl is less than configured,
+        // this is to keep cached records longer
+        if (drec->ttl && drec->ttl < dnsCacheTTL) {
+            drec->ttl = dnsCacheTTL;
+        }
         Ns_RWLockWrLock(&client->lock);
         hrec = Tcl_CreateHashEntry(&client->list, drec->name, &flag);
         if (flag) {

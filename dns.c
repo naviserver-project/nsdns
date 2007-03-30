@@ -678,6 +678,16 @@ dnsRecord *dnsRecordAppend(dnsRecord ** list, dnsRecord * pkt)
     return *list;
 }
 
+dnsRecord *dnsRecordInsert(dnsRecord ** list, dnsRecord * pkt)
+{
+    if (!list || !pkt) {
+        return 0;
+    }
+    pkt->next = *list;
+    *list = pkt;
+    return *list;
+}
+
 dnsRecord *dnsRecordRemove(dnsRecord ** list, dnsRecord * link)
 {
     if (!list || !link) {
@@ -1362,6 +1372,17 @@ int dnsPacketAddRecord(dnsPacket * pkt, dnsRecord ** list, short *count, dnsReco
         return -1;
     }
     dnsRecordAppend(list, rec);
+    (*count)++;
+    return 0;
+}
+
+int dnsPacketInsertRecord(dnsPacket * pkt, dnsRecord ** list, short *count, dnsRecord * rec)
+{
+    // Do not allow duplicate or broken records
+    if (dnsRecordSearch(*list, rec, 0)) {
+        return -1;
+    }
+    dnsRecordInsert(list, rec);
     (*count)++;
     return 0;
 }

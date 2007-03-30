@@ -184,6 +184,7 @@ dnsRecord *dnsRecordCreateNAPTR(char *name,int order,int preference,char *flags,
 Tcl_Obj *dnsRecordCreateTclObj(Tcl_Interp *interp,dnsRecord *drec);
 void dnsRecordUpdate(dnsRecord *rec);
 dnsRecord *dnsRecordAppend(dnsRecord **list,dnsRecord *pkt);
+dnsRecord *dnsRecordInsert(dnsRecord **list,dnsRecord *pkt);
 dnsRecord *dnsRecordRemove(dnsRecord **list,dnsRecord *link);
 dnsPacket *dnsParseHeader(void *packet,int size);
 dnsRecord *dnsParseRecord(dnsPacket *pkt,int query);
@@ -208,7 +209,7 @@ dnsPacket *dnsPacketCreateQuery(char *name,int type);
 void dnsPacketLog(dnsPacket *pkt,int level,char *text, ...);
 void dnsPacketFree(dnsPacket *pkt,int type);
 int dnsPacketAddRecord(dnsPacket *pkt,dnsRecord **list,short *count,dnsRecord *rec);
-
+int dnsPacketInsertRecord(dnsPacket * pkt, dnsRecord ** list, short *count, dnsRecord * rec);
 void dnsInit(char *name,...);
 dnsPacket *dnsResolve(char *name,int type,char *server,int timeout,int retries);
 dnsPacket *dnsLookup(char *name,int type,int *errcode);

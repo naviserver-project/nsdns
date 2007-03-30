@@ -1062,10 +1062,11 @@ static int dnsRequestFind(dnsRequest * req, dnsRecord *qlist)
                 }
                 switch (qcache->type) {
                 case DNS_TYPE_CNAME:
-                    // Resolve A record for given CNAME
+                    // Resolve A record for given CNAME, if we have A records in the cache just
+                    // return all of them, otherwise let the proxy handle it
                     qrec = dnsRecordCreateA(qcache->data.name, 0);
                     if (dnsRequestFind(req, qrec)) {
-                        dnsPacketAddRecord(req->reply, &req->reply->anlist, &req->reply->ancount, dnsRecordCreate(qcache));
+                        dnsPacketInsertRecord(req->reply, &req->reply->anlist, &req->reply->ancount, dnsRecordCreate(qcache));
                     }
                     dnsRecordFree(qrec);
                     break;

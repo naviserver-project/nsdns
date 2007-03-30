@@ -1,3 +1,8 @@
+2007-03-30 Vlad Seryakov vlad@crystalballinc.com
+
+	* improved CNAME recursive lookups
+        * added new config command
+
 2007-03-29 Vlad Seryakov vlad@crystalballinc.com
 
         * added cachettl for cached records

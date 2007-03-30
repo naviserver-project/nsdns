@@ -1,4 +1,4 @@
-/* 
+/*
  * The contents of this file are subject to the Mozilla Public License
  * Version 1.1(the "License"); you may not use this file except in
  * compliance with the License. You may obtain a copy of the License at
@@ -20,7 +20,7 @@
  * version of this file under either the License or the GPL.
  *
  * Author Vlad Seryakov vlad@crystalballinc.com
- * 
+ *
  */
 
 #define DNS_VERSION "0.7.7"
@@ -82,7 +82,7 @@
 #define DNS_SET_OPCODE(x,y)     ((x) = ((x) & ~0xe800) | (((y) << 11) & 0xe800))
 #define DNS_SET_QR(x,y)         ((x) = ((x) & ~0x8000) | (((y) << 15) & 0x8000))
 
-#define DNS_BUF_SIZE            1524
+#define DNS_BUF_SIZE            2048
 #define DNS_REPLY_SIZE          514
 #define DNS_QUEUE_SIZE          16
 

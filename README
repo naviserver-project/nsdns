@@ -1,5 +1,5 @@
 DNS Module for NaviServer 4.x
-Release 0.7.7
+Release 0.7.8
 vlad@crystalballinc.com
 
 This is NaviServer module that implements DNS server/proxy.

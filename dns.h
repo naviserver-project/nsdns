@@ -44,6 +44,7 @@
 #define DNS_TYPE_TXT            16
 #define DNS_TYPE_SRV            33
 #define DNS_TYPE_NAPTR          35
+#define DNS_TYPE_OPT            41
 #define DNS_TYPE_ANY            255
 #define DNS_DEFAULT_TTL         (60 * 60)
 #define DNS_CLASS_INET          1

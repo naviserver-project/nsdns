@@ -59,6 +59,7 @@ static struct {
    { "PTR",   DNS_TYPE_PTR },
    { "NAPTR", DNS_TYPE_NAPTR },
    { "MX",    DNS_TYPE_MX },
+   { "OPT",   DNS_TYPE_OPT },
    { NULL,    0 }
 };
 
@@ -819,7 +820,7 @@ int dnsParseName(dnsPacket * pkt, char **ptr, char *buf, int buflen, int pos, in
     char *p;
 
     if (level > 15) {
-        Ns_Log(Error, "nsdns: infinite loop %d: %d", (*ptr - pkt->buf.data) - 2, level);
+        Ns_Log(Error, "nsdns: infinite loop %ld: %d", (*ptr - pkt->buf.data) - 2, level);
         return -9;
     }
     while ((len = *((*ptr)++)) != 0) {
@@ -885,14 +886,14 @@ dnsPacket *dnsParseHeader(void *buf, int size)
 
 dnsRecord *dnsParseRecord(dnsPacket * pkt, int query)
 {
-    int offset;
+    //int offset;
     unsigned long ul;
     unsigned short us;
     char name[256] = "";
     dnsRecord *y;
 
     y = ns_calloc(1, sizeof(dnsRecord));
-    offset = (pkt->buf.ptr - pkt->buf.data) - 2;
+    //offset = (pkt->buf.ptr - pkt->buf.data) - 2;
     // The name of the resource
     if ((y->nsize = dnsParseName(pkt, &pkt->buf.ptr, name, 255, 0, 0)) < 0) {
         snprintf(name, 255, "invalid name: %d %s: ", y->nsize, pkt->buf.ptr);
@@ -900,6 +901,7 @@ dnsRecord *dnsParseRecord(dnsPacket * pkt, int query)
     }
     y->name = ns_malloc(y->nsize + 1);
     strcpy(y->name, name);
+
     // The type of data
     if (pkt->buf.ptr + 2 > pkt->buf.data + pkt->buf.allocated) {
         strcpy(name, "invalid type position");
@@ -926,6 +928,7 @@ dnsRecord *dnsParseRecord(dnsPacket * pkt, int query)
     }
     memcpy(&ul, pkt->buf.ptr, sizeof(ul));
     y->ttl = ntohl(ul);
+
     pkt->buf.ptr += 4;
     // Fetch the resource data.
     if (pkt->buf.ptr + 2 > pkt->buf.data + pkt->buf.allocated) {
@@ -933,9 +936,13 @@ dnsRecord *dnsParseRecord(dnsPacket * pkt, int query)
         goto err;
     }
     memcpy(&us, pkt->buf.ptr, sizeof(us));
+
     if (!(y->len = ntohs(us))) {
-        strcpy(name, "empty data len");
-        goto err;
+	if (y->type != DNS_TYPE_OPT) {
+	    strcpy(name, "empty data len");
+	    goto err;
+	}
+        goto rec;
     }
     pkt->buf.ptr += 2;
     if (pkt->buf.ptr + y->len > pkt->buf.data + pkt->buf.allocated) {
@@ -960,7 +967,7 @@ dnsRecord *dnsParseRecord(dnsPacket * pkt, int query)
     case DNS_TYPE_NS:
     case DNS_TYPE_CNAME:
     case DNS_TYPE_PTR:
-        offset = (pkt->buf.ptr - pkt->buf.data) - 2;
+        //offset = (pkt->buf.ptr - pkt->buf.data) - 2;
         if (dnsParseName(pkt, &pkt->buf.ptr, name, 255, 0, 0) < 0) {
             goto err;
         }
@@ -1052,8 +1059,9 @@ dnsPacket *dnsParsePacket(unsigned char *packet, int size)
         }
         dnsRecordAppend(&pkt->qdlist, rec);
     }
-    if (!pkt->qdlist)
+    if (!pkt->qdlist) {
         goto err;
+    }
     for (i = 0; i < pkt->ancount; i++) {
         if (!(rec = dnsParseRecord(pkt, 0))) {
             goto err;

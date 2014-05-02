@@ -1265,7 +1265,7 @@ static dnsClient *DnsClientCreate(char *host)
         return 0;
     }
     Ns_RWLockWrLock(&dnsClientLock);
-    entry = Tcl_CreateHashEntry(&dnsClientList, (char *) addr.s_addr, &new);
+    entry = Tcl_CreateHashEntry(&dnsClientList, (char *)(intptr_t)addr.s_addr, &new);
     Ns_RWLockUnlock(&dnsClientLock);
     if (new) {
         client = ns_calloc(1, sizeof(dnsClient));
@@ -1287,7 +1287,7 @@ static dnsClient *DnsClientFind(char *host, struct in_addr addr)
         return &dnsClientDflt;
     }
     Ns_RWLockRdLock(&dnsClientLock);
-    entry = Tcl_FindHashEntry(&dnsClientList, (char *) addr.s_addr);
+    entry = Tcl_FindHashEntry(&dnsClientList, (char *)(intptr_t) addr.s_addr);
     Ns_RWLockUnlock(&dnsClientLock);
     if (entry) {
         client = Tcl_GetHashValue(entry);

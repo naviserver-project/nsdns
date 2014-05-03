@@ -68,17 +68,17 @@ typedef struct _dnsQueue {
 } dnsQueue;
 
 static void *dnsRequestCreate(int sock, char *buf, int len);
-static void dnsRequestFree(dnsRequest * req);
-static int dnsRequestSend(dnsRequest * req);
-static int dnsRequestHandle(dnsRequest * req);
-static int dnsRequestFind(dnsRequest * req, dnsRecord *qlist);
-static void dnsRecordCache(dnsClient * client, dnsRecord ** list);
+static void dnsRequestFree(dnsRequest *req);
+static int dnsRequestSend(dnsRequest *req);
+static int dnsRequestHandle(dnsRequest *req);
+static int dnsRequestFind(dnsRequest *req, dnsRecord *qlist);
+static void dnsRecordCache(dnsClient *client, dnsRecord **list);
 static int dnsWrite(int sock, void *vbuf, int len);
 static int dnsRead(int sock, void *vbuf, int len);
 static void DnsPanic(const char *fmt, ...);
 static void DnsSegv(int sig);
-static int DnsCmd(ClientData arg, Tcl_Interp * interp, int objc, Tcl_Obj * CONST objv[]);
-static int DnsInterpInit(Tcl_Interp * interp, void *context);
+static int DnsCmd(ClientData arg, Tcl_Interp *interp, int objc, Tcl_Obj *CONST objv[]);
+static int DnsInterpInit(Tcl_Interp *interp, void *context);
 static int DnsTcpListen(SOCKET sock, void *si, int when);
 static void DnsTcpThread(void *arg);
 static void DnsProxyThread(void *arg);
@@ -226,7 +226,8 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
         Ns_Log(Notice, "nsdns: SEGV and Panic trapping is activated");
     }
     Ns_MutexSetName2(&dnsProxyMutex, "nsdns", "proxy");
-    Ns_Log(Notice, "nsdns: version %s listening on %s:%d, FD %d:%d", DNS_VERSION, address ? address : "0.0.0.0", dnsPort,
+    Ns_Log(Notice, "nsdns: version %s listening on %s:%d, FD %d:%d", 
+	   DNS_VERSION, address ? address : "0.0.0.0", dnsPort,
            dnsUdpSock, dnsTcpSock);
     Ns_TclRegisterTrace(server, DnsInterpInit, 0, NS_TCL_TRACE_CREATE);
     return NS_OK;
@@ -235,7 +236,7 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
 /*
  * Add ns_dns commands to interp.
  */
-static int DnsInterpInit(Tcl_Interp * interp, void *context)
+static int DnsInterpInit(Tcl_Interp *interp, void *context)
 {
     Tcl_CreateObjCommand(interp, "ns_dns", DnsCmd, NULL, NULL);
     return NS_OK;
@@ -265,7 +266,7 @@ static void DnsSegv(int sig)
     }
 }
 
-static int DnsCmd(ClientData arg, Tcl_Interp * interp, int objc, Tcl_Obj * CONST objv[])
+static int DnsCmd(ClientData arg, Tcl_Interp *interp, int objc, Tcl_Obj *CONST objv[])
 {
     enum commands {
         cmdAdd, cmdDel, cmdFlush, cmdList, cmdResolve, cmdQueue, cmdLookup, cmdStat, cmdFind,
@@ -963,7 +964,7 @@ static void *dnsRequestCreate(int sock, char *buf, int len)
     return req;
 }
 
-static void dnsRequestFree(dnsRequest * req)
+static void dnsRequestFree(dnsRequest *req)
 {
     if (!req) {
         return;
@@ -974,7 +975,7 @@ static void dnsRequestFree(dnsRequest * req)
     ns_free(req);
 }
 
-static int dnsRequestFind(dnsRequest * req, dnsRecord *qlist)
+static int dnsRequestFind(dnsRequest *req, dnsRecord *qlist)
 {
     int nsize;
     char domain[255], *ptr, *str;
@@ -1148,7 +1149,7 @@ static int dnsRequestFind(dnsRequest * req, dnsRecord *qlist)
     return req->reply->ancount || req->reply->nscount;
 }
 
-static int dnsRequestHandle(dnsRequest * req)
+static int dnsRequestHandle(dnsRequest *req)
 {
     dnsPacketLog(req->req, 1, "Received request from client=%s", req->client->ipaddr);
 
@@ -1190,7 +1191,7 @@ static int dnsRequestHandle(dnsRequest * req)
     return 0;
 }
 
-static int dnsRequestSend(dnsRequest * req)
+static int dnsRequestSend(dnsRequest *req)
 {
     int rc;
 
@@ -1208,7 +1209,7 @@ static int dnsRequestSend(dnsRequest * req)
     return rc;
 }
 
-static void dnsRecordCache(dnsClient * client, dnsRecord ** list)
+static void dnsRecordCache(dnsClient *client, dnsRecord **list)
 {
     int flag;
     dnsRecord *drec, *hlist;

@@ -286,9 +286,9 @@ dnsPacket *dnsResolve(char *name, int type, char *server, int timeout, int retri
     return 0;
 }
 
-void dnsRecordDump(Ns_DString * ds, dnsRecord * y)
+void dnsRecordDump(Ns_DString *ds, dnsRecord *y)
 {
-    if (!y) {
+    if (y == NULL) {
         return;
     }
     Ns_DStringPrintf(ds, "Name=%s, Type=%s(%d), Class=%u, TTL=%lu, Length=%u, ",
@@ -334,7 +334,7 @@ void dnsRecordDump(Ns_DString * ds, dnsRecord * y)
     }
 }
 
-void dnsRecordLog(dnsRecord * rec, int level, char *text, ...)
+void dnsRecordLog(dnsRecord *rec, int level, char *text, ...)
 {
     Ns_DString ds;
     va_list ap;
@@ -353,7 +353,7 @@ void dnsRecordLog(dnsRecord * rec, int level, char *text, ...)
     va_end(ap);
 }
 
-void dnsRecordFree(dnsRecord * pkt)
+void dnsRecordFree(dnsRecord *pkt)
 {
     if (!pkt) {
         return;
@@ -393,7 +393,7 @@ void dnsRecordFree(dnsRecord * pkt)
     ns_free(pkt);
 }
 
-void dnsRecordDestroy(dnsRecord ** pkt)
+void dnsRecordDestroy(dnsRecord **pkt)
 {
     if (!pkt) {
         return;
@@ -405,7 +405,7 @@ void dnsRecordDestroy(dnsRecord ** pkt)
     }
 }
 
-dnsRecord *dnsRecordCreate(dnsRecord * from)
+dnsRecord *dnsRecordCreate(dnsRecord *from)
 {
     dnsRecord *rec = ns_calloc(1, sizeof(dnsRecord));
     if (from) {
@@ -599,7 +599,7 @@ dnsRecord *dnsRecordCreateSOA(char *name, char *mname, char *rname,
     return y;
 }
 
-Tcl_Obj *dnsRecordCreateTclObj(Tcl_Interp * interp, dnsRecord * drec)
+Tcl_Obj *dnsRecordCreateTclObj(Tcl_Interp *interp, dnsRecord *drec)
 {
     Tcl_Obj *list = Tcl_NewListObj(0, 0);
 
@@ -651,7 +651,7 @@ Tcl_Obj *dnsRecordCreateTclObj(Tcl_Interp * interp, dnsRecord * drec)
     return list;
 }
 
-void dnsRecordUpdate(dnsRecord * rec)
+void dnsRecordUpdate(dnsRecord *rec)
 {
     switch (rec->type) {
     case DNS_TYPE_NAPTR:
@@ -669,7 +669,7 @@ void dnsRecordUpdate(dnsRecord * rec)
     }
 }
 
-dnsRecord *dnsRecordAppend(dnsRecord ** list, dnsRecord * pkt)
+dnsRecord *dnsRecordAppend(dnsRecord **list, dnsRecord *pkt)
 {
     if (!list || !pkt) {
         return 0;
@@ -679,7 +679,7 @@ dnsRecord *dnsRecordAppend(dnsRecord ** list, dnsRecord * pkt)
     return *list;
 }
 
-dnsRecord *dnsRecordInsert(dnsRecord ** list, dnsRecord * pkt)
+dnsRecord *dnsRecordInsert(dnsRecord **list, dnsRecord *pkt)
 {
     if (!list || !pkt) {
         return 0;
@@ -689,7 +689,7 @@ dnsRecord *dnsRecordInsert(dnsRecord ** list, dnsRecord * pkt)
     return *list;
 }
 
-dnsRecord *dnsRecordRemove(dnsRecord ** list, dnsRecord * link)
+dnsRecord *dnsRecordRemove(dnsRecord **list, dnsRecord *link)
 {
     if (!list || !link) {
         return 0;
@@ -711,7 +711,7 @@ dnsRecord *dnsRecordRemove(dnsRecord ** list, dnsRecord * link)
     return 0;
 }
 
-int dnsRecordSearch(dnsRecord * list, dnsRecord * rec, int replace)
+int dnsRecordSearch(dnsRecord *list, dnsRecord *rec, int replace)
 {
     dnsRecord *drec;
 
@@ -797,7 +797,7 @@ int dnsRecordSearch(dnsRecord * list, dnsRecord * rec, int replace)
     return 0;
 }
 
-int dnsParseString(dnsPacket * pkt, char **buf)
+int dnsParseString(dnsPacket *pkt, char **buf)
 {
     int len;
 
@@ -814,7 +814,7 @@ int dnsParseString(dnsPacket * pkt, char **buf)
     return 0;
 }
 
-int dnsParseName(dnsPacket * pkt, char **ptr, char *buf, int buflen, int pos, int level)
+int dnsParseName(dnsPacket *pkt, char **ptr, char *buf, int buflen, int pos, int level)
 {
     unsigned short i, len, offset;
     char *p;
@@ -826,7 +826,7 @@ int dnsParseName(dnsPacket * pkt, char **ptr, char *buf, int buflen, int pos, in
     while ((len = *((*ptr)++)) != 0) {
         switch (len & 0xC0) {
         case 0xC0:
-            if ((offset = ((len & ~0xC0) << 8) + (u_char) ** ptr) >= pkt->buf.size) {
+            if ((offset = ((len & ~0xC0) << 8) + (u_char) **ptr) >= pkt->buf.size) {
                 return -1;
             }
             (*ptr)++;
@@ -884,7 +884,7 @@ dnsPacket *dnsParseHeader(void *buf, int size)
     return pkt;
 }
 
-dnsRecord *dnsParseRecord(dnsPacket * pkt, int query)
+dnsRecord *dnsParseRecord(dnsPacket *pkt, int query)
 {
     //int offset;
     unsigned long ul;
@@ -1088,7 +1088,7 @@ dnsPacket *dnsParsePacket(unsigned char *packet, int size)
 
 }
 
-void dnsEncodeName(dnsPacket * pkt, char *name, int compress)
+void dnsEncodeName(dnsPacket *pkt, char *name, int compress)
 {
     dnsName *nm;
     unsigned int c;
@@ -1127,7 +1127,7 @@ void dnsEncodeName(dnsPacket * pkt, char *name, int compress)
     *pkt->buf.ptr++ = 0;
 }
 
-void dnsEncodeHeader(dnsPacket * pkt)
+void dnsEncodeHeader(dnsPacket *pkt)
 {
     unsigned short *p = (unsigned short *) pkt->buf.data;
 
@@ -1141,33 +1141,33 @@ void dnsEncodeHeader(dnsPacket * pkt)
     p[6] = htons(pkt->arcount);
 }
 
-void dnsEncodePtr(dnsPacket * pkt, int offset)
+void dnsEncodePtr(dnsPacket *pkt, int offset)
 {
     *pkt->buf.ptr++ = 0xC0 | (offset >> 8);
     *pkt->buf.ptr++ = (offset & 0xFF);
 }
 
-void dnsEncodeShort(dnsPacket * pkt, int num)
+void dnsEncodeShort(dnsPacket *pkt, int num)
 {
     unsigned short us = htons((unsigned short) num);
     memcpy(pkt->buf.ptr, &us, sizeof(us));
     pkt->buf.ptr += 2;
 }
 
-void dnsEncodeLong(dnsPacket * pkt, unsigned long num)
+void dnsEncodeLong(dnsPacket *pkt, unsigned long num)
 {
     unsigned long ul = htonl((unsigned long) num);
     memcpy(pkt->buf.ptr, &ul, sizeof(ul));
     pkt->buf.ptr += 4;
 }
 
-void dnsEncodeData(dnsPacket * pkt, void *ptr, int len)
+void dnsEncodeData(dnsPacket *pkt, void *ptr, int len)
 {
     memcpy(pkt->buf.ptr, ptr, (unsigned) len);
     pkt->buf.ptr += len;
 }
 
-void dnsEncodeString(dnsPacket * pkt, char *str)
+void dnsEncodeString(dnsPacket *pkt, char *str)
 {
     int len = str ? strlen(str) : 0;
     *pkt->buf.ptr++ = len;
@@ -1177,20 +1177,20 @@ void dnsEncodeString(dnsPacket * pkt, char *str)
     }
 }
 
-void dnsEncodeBegin(dnsPacket * pkt)
+void dnsEncodeBegin(dnsPacket *pkt)
 {
     // Mark offset where the record begins
     pkt->buf.rec = pkt->buf.ptr;
     dnsEncodeShort(pkt, 0);
 }
 
-void dnsEncodeEnd(dnsPacket * pkt)
+void dnsEncodeEnd(dnsPacket *pkt)
 {
     unsigned short us = htons(pkt->buf.ptr - pkt->buf.rec - 2);
     memcpy(pkt->buf.rec, &us, sizeof(us));
 }
 
-void dnsEncodeRecord(dnsPacket * pkt, dnsRecord * list)
+void dnsEncodeRecord(dnsPacket *pkt, dnsRecord *list)
 {
     dnsEncodeGrow(pkt, 12, "pkt:hdr");
     for (; list; list = list->next) {
@@ -1236,7 +1236,7 @@ void dnsEncodeRecord(dnsPacket * pkt, dnsRecord * list)
     }
 }
 
-void dnsEncodePacket(dnsPacket * pkt)
+void dnsEncodePacket(dnsPacket *pkt)
 {
     pkt->buf.ptr = &pkt->buf.data[DNS_HEADER_LEN + 2];
     /* Encode query part */
@@ -1250,7 +1250,7 @@ void dnsEncodePacket(dnsPacket * pkt)
     dnsEncodeHeader(pkt);
 }
 
-void dnsEncodeGrow(dnsPacket * pkt, unsigned int size, char *proc)
+void dnsEncodeGrow(dnsPacket *pkt, unsigned int size, char *proc)
 {
     int offset = pkt->buf.ptr - pkt->buf.data;
     int roffset = pkt->buf.rec - pkt->buf.data;
@@ -1266,7 +1266,7 @@ void dnsEncodeGrow(dnsPacket * pkt, unsigned int size, char *proc)
     }
 }
 
-dnsPacket *dnsPacketCreateReply(dnsPacket * req)
+dnsPacket *dnsPacketCreateReply(dnsPacket *req)
 {
     dnsRecord *rec;
     dnsPacket *pkt = NULL;
@@ -1312,7 +1312,7 @@ dnsPacket *dnsPacketCreateQuery(char *name, int type)
     return pkt;
 }
 
-void dnsPacketLog(dnsPacket * pkt, int level, char *text, ...)
+void dnsPacketLog(dnsPacket *pkt, int level, char *text, ...)
 {
     dnsRecord *y;
     Ns_DString ds;
@@ -1353,7 +1353,7 @@ void dnsPacketLog(dnsPacket * pkt, int level, char *text, ...)
     Ns_DStringFree(&ds);
 }
 
-void dnsPacketFree(dnsPacket * pkt, int type)
+void dnsPacketFree(dnsPacket *pkt, int type)
 {
     if (!pkt) {
         return;
@@ -1373,7 +1373,7 @@ void dnsPacketFree(dnsPacket * pkt, int type)
     ns_free(pkt);
 }
 
-int dnsPacketAddRecord(dnsPacket * pkt, dnsRecord ** list, short *count, dnsRecord * rec)
+int dnsPacketAddRecord(dnsPacket *pkt, dnsRecord **list, short *count, dnsRecord *rec)
 {
     // Do not allow duplicate or broken records
     if (dnsRecordSearch(*list, rec, 0)) {
@@ -1384,7 +1384,7 @@ int dnsPacketAddRecord(dnsPacket * pkt, dnsRecord ** list, short *count, dnsReco
     return 0;
 }
 
-int dnsPacketInsertRecord(dnsPacket * pkt, dnsRecord ** list, short *count, dnsRecord * rec)
+int dnsPacketInsertRecord(dnsPacket *pkt, dnsRecord **list, short *count, dnsRecord *rec)
 {
     // Do not allow duplicate or broken records
     if (dnsRecordSearch(*list, rec, 0)) {

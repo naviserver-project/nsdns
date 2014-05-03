@@ -25,12 +25,12 @@
 
 #define DNS_VERSION "0.7.7"
 
-// DNS flags
+/* DNS flags */
 #define DNS_TCP                 0x0001
 #define DNS_PROXY               0x0002
 #define DNS_NAPTR_REGEXP        0x0004
 
-//  DNS record types
+/* DNS record types */
 #define	DNS_HEADER_LEN          12
 #define DNS_TYPE_A              1
 #define DNS_TYPE_NS             2
@@ -49,7 +49,7 @@
 #define DNS_DEFAULT_TTL         (60 * 60)
 #define DNS_CLASS_INET          1
 
-// RCODE types
+/* RCODE types */
 #define RCODE_NOERROR            0
 #define RCODE_QUERYERR           1
 #define RCODE_SRVFAIL            2
@@ -58,7 +58,7 @@
 #define RCODE_REFUSED            5
 #define RCODE_NOTAUTH            9
 
-// OPCODE types
+/* OPCODE types */
 #define OPCODE_QUERY              0
 #define OPCODE_IQUERY             1
 #define OPCODE_STATUS             2
@@ -66,7 +66,7 @@
 #define OPCODE_NOTIFY             4
 #define OPCODE_UPDATE             5
 
-// Macros for manipulating the flags field
+/* Macros for manipulating the flags field */
 #define DNS_GET_RCODE(x)        (((x) & 0x000f))
 #define DNS_GET_RA(x)           (((x) & 0x0080) >> 7)
 #define DNS_GET_RD(x)           (((x) & 0x0100) >> 8)

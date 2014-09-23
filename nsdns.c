@@ -39,7 +39,7 @@ typedef struct _dnsClient {
 typedef struct _dnsRequest {
     struct _dnsRequest *next, *prev;
     int sock;
-    int flags;
+    unsigned int flags;
     dnsPacket *req;
     dnsPacket *reply;
     dnsClient *client;
@@ -1224,7 +1224,7 @@ static int dnsRequestSend(dnsRequest *req)
 
 static void dnsRecordCache(dnsClient *client, dnsRecord **list)
 {
-    int flag;
+    unsigned int flag;
     dnsRecord *drec, *hlist;
     Tcl_HashEntry *hrec;
     unsigned long now = time(0);

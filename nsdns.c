@@ -79,7 +79,7 @@ static void DnsPanic(const char *fmt, ...);
 static void DnsSegv(int sig);
 static int DnsCmd(ClientData arg, Tcl_Interp *interp, int objc, Tcl_Obj *CONST objv[]);
 static int DnsInterpInit(Tcl_Interp *interp, void *context);
-static int DnsTcpListen(SOCKET sock, void *si, int when);
+static Ns_SockProc DnsTcpListen;
 static void DnsTcpThread(void *arg);
 static void DnsProxyThread(void *arg);
 static void DnsQueueListenThread(void *arg);
@@ -745,7 +745,7 @@ static void DnsQueueRequestThread(void *arg)
     }
 }
 
-static int DnsTcpListen(SOCKET sock, void *si, int when)
+static int DnsTcpListen(SOCKET sock, void *si, unsigned int when)
 {
     struct {
         SOCKET sock;
@@ -882,7 +882,8 @@ static void DnsProxyThread(void *arg)
         Ns_MutexLock(&dnsProxyMutex);
         for (req = dnsProxyQueue; req; req = req->next) {
 	  /* Find request with received ID and remove from the queue */
-            if (req->req->id == ntohs(*((unsigned short *) buf))) {
+	    unsigned short *buf_id = (unsigned short *) buf;
+            if (req->req->id == ntohs(*buf_id)) {
                 if (!req->prev) {
                     dnsProxyQueue = req->next;
                 } else {
@@ -897,7 +898,8 @@ static void DnsProxyThread(void *arg)
         Ns_MutexUnlock(&dnsProxyMutex);
         /* Forward reply back to the client and cache locally */
         if (req != NULL) {
-            *((unsigned short *) buf) = htons(req->proxy_id);
+	    unsigned short *buf_id = (unsigned short *) buf;
+            *buf_id = htons(req->proxy_id);
             dnsPacketFree(req->reply, 1);
             if ((req->reply = dnsParsePacket((unsigned char*)buf, len))) {
                 dnsPacketLog(req->reply, 6, "Proxy reply received:");
@@ -1224,7 +1226,7 @@ static int dnsRequestSend(dnsRequest *req)
 
 static void dnsRecordCache(dnsClient *client, dnsRecord **list)
 {
-    unsigned int flag;
+    int flag;
     dnsRecord *drec, *hlist;
     Tcl_HashEntry *hrec;
     unsigned long now = time(0);

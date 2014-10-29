@@ -751,11 +751,11 @@ static int DnsTcpListen(SOCKET sock, void *si, unsigned int when)
         SOCKET sock;
         struct sockaddr_in saddr;
     } arg;
-    int saddr_len = sizeof(struct sockaddr_in);
+    socklen_t saddr_len = (socklen_t)sizeof(struct sockaddr_in);
 
     switch (when) {
     case NS_SOCK_READ:
-        if ((arg.sock = Ns_SockAccept(sock, (struct sockaddr *) &arg.saddr, &saddr_len)) == INVALID_SOCKET) {
+        if ((arg.sock = Ns_SockAccept(sock, (struct sockaddr *) &arg.saddr, &saddr_len)) == NS_INVALID_SOCKET) {
             break;
         }
         if (dnsDebug > 3) {

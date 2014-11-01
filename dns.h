@@ -172,7 +172,7 @@ void dnsRecordFree(dnsRecord *pkt);
 void dnsRecordDestroy(dnsRecord **pkt);
 int dnsRecordSearch(dnsRecord *list,dnsRecord *rec,int replace);
 dnsRecord *dnsRecordCreate(dnsRecord *from);
-dnsRecord *dnsRecordCreateA(char *name,unsigned long ipaddr);
+dnsRecord *dnsRecordCreateA(const char *name,unsigned long ipaddr);
 dnsRecord *dnsRecordCreateNS(char *name,char *data);
 dnsRecord *dnsRecordCreateCNAME(char *name,char *data);
 dnsRecord *dnsRecordCreatePTR(char *name,char *data);

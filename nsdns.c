@@ -103,8 +103,8 @@ static int dnsProxySock;
 static int dnsThreads;
 static int dnsRcvBuf;
 static int dnsProxyRetries;
-static char *dnsProxyHost;
-static char *dnsDefaultHost;
+static const char *dnsProxyHost = NULL;
+static const char *dnsDefaultHost = NULL;
 static Ns_Cond dnsProxyCond;
 static Ns_Mutex dnsProxyMutex;
 static dnsRequest *dnsProxyQueue = 0;
@@ -119,7 +119,7 @@ NS_EXPORT int Ns_ModuleVersion = 1;
 NS_EXPORT int Ns_ModuleInit(char *server, char *module)
 {
     int n, i;
-    char *path, *address;
+    const char *path, *address;
 
     Ns_Log(Notice, "nsdns module version %s server: %s", DNS_VERSION, server);
 

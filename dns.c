@@ -463,7 +463,7 @@ dnsRecord *dnsRecordCreate(dnsRecord *from)
     return rec;
 }
 
-dnsRecord *dnsRecordCreateA(char *name, unsigned long ipaddr)
+dnsRecord *dnsRecordCreateA(const char *name, unsigned long ipaddr)
 {
     dnsRecord *y = ns_calloc(1, sizeof(dnsRecord));
 

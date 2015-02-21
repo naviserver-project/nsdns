@@ -78,8 +78,10 @@ static int dnsRead(int sock, void *vbuf, int len);
 static void DnsPanic(const char *fmt, ...);
 static void DnsSegv(int sig);
 static int DnsCmd(ClientData arg, Tcl_Interp *interp, int objc, Tcl_Obj *CONST objv[]);
-static int DnsInterpInit(Tcl_Interp *interp, void *context);
+
+static Ns_TclTraceProc DnsInterpInit;
 static Ns_SockProc DnsTcpListen;
+
 static void DnsTcpThread(void *arg);
 static void DnsProxyThread(void *arg);
 static void DnsQueueListenThread(void *arg);
@@ -198,8 +200,8 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
         if ((dnsProxyHost = Ns_ConfigGetValue(path, "proxyhost"))) {
             if (Ns_GetSockAddr(&dnsProxyAddr, dnsProxyHost, dnsProxyPort) != NS_OK ||
                 (dnsProxySock = socket(AF_INET, SOCK_DGRAM, 0)) == -1) {
-                close(dnsUdpSock);
-                close(dnsTcpSock);
+                ns_sockclose(dnsUdpSock);
+                ns_sockclose(dnsTcpSock);
                 Ns_Log(Notice, "nsdns: create proxy thread %s:%d: %s", dnsProxyHost, dnsProxyPort, strerror(errno));
                 return NS_ERROR;
             }
@@ -239,7 +241,7 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
 /*
  * Add ns_dns commands to interp.
  */
-static int DnsInterpInit(Tcl_Interp *interp, void *context)
+static int DnsInterpInit(Tcl_Interp *interp, const void *context)
 {
     Tcl_CreateObjCommand(interp, "ns_dns", DnsCmd, NULL, NULL);
     return NS_OK;
@@ -252,8 +254,8 @@ static void DnsPanic(const char *fmt, ...)
     va_start(ap, fmt);
     Ns_Log(Error, "nsdns[%d]: panic %p", getpid(), va_arg(ap, char *));
     va_end(ap);
-    close(dnsUdpSock);
-    close(dnsTcpSock);
+    ns_sockclose(dnsUdpSock);
+    ns_sockclose(dnsTcpSock);
     while (1) {
         sleep(1);
     }
@@ -261,8 +263,8 @@ static void DnsPanic(const char *fmt, ...)
 
 static void DnsSegv(int sig)
 {
-    close(dnsUdpSock);
-    close(dnsTcpSock);
+    ns_sockclose(dnsUdpSock);
+    ns_sockclose(dnsTcpSock);
     Ns_Log(Error, "nsdns: SIGSEGV received %d", getpid());
     while (1) {
         sleep(1);
@@ -745,10 +747,10 @@ static void DnsQueueRequestThread(void *arg)
     }
 }
 
-static int DnsTcpListen(SOCKET sock, void *si, unsigned int when)
+static bool DnsTcpListen(NS_SOCKET sock, void *si, unsigned int when)
 {
     struct {
-        SOCKET sock;
+        NS_SOCKET sock;
         struct sockaddr_in saddr;
     } arg;
     socklen_t saddr_len = (socklen_t)sizeof(struct sockaddr_in);
@@ -764,7 +766,7 @@ static int DnsTcpListen(SOCKET sock, void *si, unsigned int when)
         Ns_ThreadCreate(DnsTcpThread, (void *) &arg, 0, 0);
         return NS_TRUE;
     }
-    close(sock);
+    ns_sockclose(sock);
     return NS_FALSE;
 }
 
@@ -772,7 +774,7 @@ static void DnsTcpThread(void *sock)
 {
     struct {
         struct sockaddr_in saddr;
-        SOCKET sock;
+        NS_SOCKET sock;
     } arg;
     short len;
     dnsRequest *req;
@@ -783,7 +785,7 @@ static void DnsTcpThread(void *sock)
     if (dnsRead(arg.sock, &len, 2) != 2 ||
         (len = ntohs(len)) > DNS_BUF_SIZE ||
         dnsRead(arg.sock, buf, len) != len || !(req = dnsRequestCreate(arg.sock, buf, len))) {
-        close(arg.sock);
+        ns_sockclose(arg.sock);
         return;
     }
     req->flags |= DNS_TCP;
@@ -798,7 +800,7 @@ static void DnsTcpThread(void *sock)
     default:
         dnsRequestFree(req);
     }
-    close(arg.sock);
+    ns_sockclose(arg.sock);
 }
 
 static void DnsProxyThread(void *arg)
@@ -1342,3 +1344,12 @@ static int DnsClientResolve(char *host, struct in_addr *addr)
     *addr = sa.sin_addr;
     return NS_OK;
 }
+
+/*
+ * Local Variables:
+ * mode: c
+ * c-basic-offset: 4
+ * fill-column: 78
+ * indent-tabs-mode: nil
+ * End:
+ */

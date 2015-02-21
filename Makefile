@@ -10,7 +10,7 @@ MOD      =  nsdns.so
 #
 # Objects to build.
 #
-OBJS    = nsdns.o dns.o
+MODOBJS    = nsdns.o dns.o
 HDRS	= dns.h
 
 #

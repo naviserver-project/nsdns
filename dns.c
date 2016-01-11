@@ -118,7 +118,7 @@ dnsPacket *dnsLookup(char *name, int type, int *errcode)
     dnsServer *server = 0;
     dnsPacket *req, *reply;
     struct sockaddr_in saddr;
-    int sock, len, timeout, retries, now;
+    int sock;
 
     if ((sock = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
         if (errcode) {
@@ -132,6 +132,8 @@ dnsPacket *dnsLookup(char *name, int type, int *errcode)
     saddr.sin_port = htons(53);
 
     while (1) {
+        int timeout, retries, now;
+	
         now = time(0);
         Ns_MutexLock(&dnsMutex);
         retries = dnsResolverRetries;
@@ -165,6 +167,8 @@ dnsPacket *dnsLookup(char *name, int type, int *errcode)
         }
         saddr.sin_addr.s_addr = server->ipaddr;
         while (retries--) {
+            int len;
+            
             len = sizeof(struct sockaddr_in);
             if (sendto(sock, req->buf.data + 2, req->buf.size, 0, (struct sockaddr *) &saddr, len) < 0) {
                 if (dnsDebug > 3) {
@@ -214,7 +218,7 @@ dnsPacket *dnsLookup(char *name, int type, int *errcode)
 dnsPacket *dnsResolve(char *name, int type, char *server, int timeout, int retries)
 {
     fd_set fds;
-    int sock, len;
+    int sock;
     char buf[DNS_BUFSIZE];
     dnsPacket *req, *reply;
     struct timeval tv;
@@ -238,6 +242,8 @@ dnsPacket *dnsResolve(char *name, int type, char *server, int timeout, int retri
     req = dnsPacketCreateQuery(name, type);
     dnsEncodePacket(req);
     while (retries--) {
+        int len;
+        
         len = sizeof(struct sockaddr_in);
         if (sendto(sock, req->buf.data + 2, req->buf.size, 0, (struct sockaddr *) &saddr, len) < 0) {
             if (dnsDebug > 3) {
@@ -891,7 +897,7 @@ dnsRecord *dnsParseRecord(dnsPacket *pkt, int query)
     /* int offset; */
     unsigned long ul;
     unsigned short us;
-    char name[256] = "";
+    char name[256] = {'\0'};
     dnsRecord *y;
 
     y = ns_calloc(1, sizeof(dnsRecord));
@@ -1092,13 +1098,15 @@ dnsPacket *dnsParsePacket(unsigned char *packet, int size)
 
 void dnsEncodeName(dnsPacket *pkt, char *name, int compress)
 {
-    dnsName *nm;
-    unsigned int c;
-    int i, k = 0, len;
-
     dnsEncodeGrow(pkt, (name ? strlen(name) + 1 : 1), "name");
     if (name) {
+        unsigned int c;
+        int k = 0;
+        
         while (name[k]) {
+            int i, len;
+            dnsName *nm;
+            
             for (len = 0; (c = name[k + len]) != 0 && c != '.'; len++);
             if (!len || len > 63) {
                 break;
@@ -1422,3 +1430,12 @@ int dnsType(char *name)
     }
     return -1;
 }
+
+/*
+ * Local Variables:
+ * mode: c
+ * c-basic-offset: 4
+ * fill-column: 78
+ * indent-tabs-mode: nil
+ * End:
+ */

@@ -120,7 +120,6 @@ NS_EXPORT int Ns_ModuleVersion = 1;
 
 NS_EXPORT int Ns_ModuleInit(char *server, char *module)
 {
-    int n, i;
     const char *path, *address;
 
     Ns_Log(Notice, "nsdns module version %s server: %s", DNS_VERSION, server);
@@ -133,7 +132,7 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
     Tcl_InitHashTable(&dnsClientDflt.list, TCL_STRING_KEYS);
     memset(&dnsQueues, 0, sizeof(dnsQueues));
 
-    path = Ns_ConfigGetPath(server, module, NULL);
+    path = Ns_ConfigGetPath(server, module, (char *)0);
     address = Ns_ConfigGetValue(path, "address");
 
     if (!Ns_ConfigGetInt(path, "flags", &dnsFlags)) {
@@ -178,6 +177,8 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
 
     /* If no port specified it will be just client dns resolver module */
     if (dnsPort > 0) {
+        int n, i;
+        
         /* UDP socket */
         if ((dnsUdpSock = Ns_SockListenUdp(address, dnsPort)) == -1) {
             Ns_Log(Error, "nsdns: udp: %s:%d: couldn't create socket: %s", 
@@ -285,7 +286,7 @@ static int DnsCmd(ClientData arg, Tcl_Interp *interp, int objc, Tcl_Obj *CONST o
         "config", 0
     };
     int i, cmd;
-    struct in_addr addr;
+    struct in_addr addr = {0};
     int argc = objc, argp = 2;
     char tmp[128];
     dnsRecord *drec;
@@ -541,9 +542,10 @@ static int DnsCmd(ClientData arg, Tcl_Interp *interp, int objc, Tcl_Obj *CONST o
     case cmdQueue:{
         char buf[255];
         dnsRequest *req;
+        
         Ns_MutexLock(&dnsProxyMutex);
         for (req = dnsProxyQueue; req; req = req->next) {
-            snprintf(buf, sizeof(buf), "%d %s", req->req->id, req->req->qdlist->name);
+            snprintf(buf, sizeof(buf), "%u %s", req->req->id, req->req->qdlist->name);
             Tcl_AppendElement(interp, buf);
         }
         Ns_MutexUnlock(&dnsProxyMutex);
@@ -683,7 +685,6 @@ static void DnsQueueRequestThread(void *arg)
     dnsQueue *queue;
     dnsRequest *req;
     struct timeval end_time;
-    unsigned long rt, wt;
 
     queue = (dnsQueue *) arg;
     sprintf(buf, "nsdns:queue:%d", queue->id);
@@ -694,6 +695,8 @@ static void DnsQueueRequestThread(void *arg)
     Ns_MutexSetName(&queue->lock, buf);
     Ns_MutexLock(&queue->lock);
     while (1) {
+        unsigned long rt, wt;
+            
         while (!queue->head) {
             Ns_CondWait(&queue->cond, &queue->lock);
         }
@@ -707,7 +710,7 @@ static void DnsQueueRequestThread(void *arg)
         }
         queue->size--;
         Ns_MutexUnlock(&queue->lock);
-        rt = wt = 0;
+        rt = wt = 0u;
         gettimeofday(&req->start_time, 0);
         req->sock = dnsUdpSock;
         /* Allocate request structure */
@@ -809,7 +812,6 @@ static void DnsProxyThread(void *arg)
     time_t now;
     fd_set rfd;
     dnsRequest *req;
-    unsigned short *ptr;
     char buf[DNS_BUF_SIZE + 1];
     struct timeval timeout;
     struct sockaddr_in addr;
@@ -828,6 +830,8 @@ static void DnsProxyThread(void *arg)
                 /* First time, prepare for proxying, use our own id sequence to
                  * keep track of forwarded requests */
                 if (!req->proxy_count) {
+                    unsigned short *ptr;
+                        
                     req->proxy_id = req->req->id;
                     req->req->id = ++dnsID;
                     ptr = (unsigned short *) (req->req->buf.data + 2);
@@ -918,13 +922,14 @@ static void DnsProxyThread(void *arg)
 
 static int dnsRead(int sock, void *vbuf, int len)
 {
-    int nread, n;
+    int nread;
     char *buf = (char *) vbuf;
     Ns_Time timeout = { dnsReadTimeout, 0 };
 
     nread = len;
     while (len > 0) {
-        n = Ns_SockRecv(sock, buf, len, &timeout);
+        int n = Ns_SockRecv(sock, buf, len, &timeout);
+        
         if (n <= 0) {
             return -1;
         }
@@ -936,14 +941,15 @@ static int dnsRead(int sock, void *vbuf, int len)
 
 static int dnsWrite(int sock, void *vbuf, int len)
 {
-    int nwrote, n;
+    int nwrote;
     char *buf;
     Ns_Time timeout = { dnsWriteTimeout, 0 };
 
     nwrote = len;
     buf = vbuf;
     while (len > 0) {
-        n = Ns_SockSend(sock, buf, len, &timeout);
+        int n = Ns_SockSend(sock, buf, len, &timeout);
+        
         if (n <= 0) {
             return -1;
         }
@@ -987,10 +993,11 @@ static int dnsRequestFind(dnsRequest *req, dnsRecord *qlist)
     int nsize;
     char domain[255], *ptr, *str;
     unsigned long now = time(0);
-    Tcl_HashEntry *nrec, *hrec = 0;
     dnsRecord *qrec, *qcache, *ncache, *qstart, *qend;
 
     for (qrec = qlist; qrec; qrec = qrec->next) {
+        Tcl_HashEntry *nrec, *hrec = NULL;
+        
         if (!qrec->name) {
             continue;
         }
@@ -1230,10 +1237,11 @@ static void dnsRecordCache(dnsClient *client, dnsRecord **list)
 {
     int flag;
     dnsRecord *drec, *hlist;
-    Tcl_HashEntry *hrec;
     unsigned long now = time(0);
 
     while (*list) {
+            Tcl_HashEntry *hrec;
+
         drec = *list;
         *list = drec->next;
         drec->timestamp = now;

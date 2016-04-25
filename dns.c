@@ -32,7 +32,7 @@
 typedef struct _dnsServer {
     struct _dnsServer *next;
     char *name;
-    unsigned long ipaddr;
+    //struct NS_SOCKADDR_STORAGE sa;
     unsigned long fail_time;
     unsigned long fail_count;
 } dnsServer;
@@ -53,6 +53,7 @@ static struct {
 } dnsTypes[] = {
    { "ANY",   DNS_TYPE_ANY },
    { "A",     DNS_TYPE_A },
+   { "AAAA",  DNS_TYPE_AAAA },
    { "NS",    DNS_TYPE_NS },
    { "CNAME", DNS_TYPE_CNAME },
    { "SOA",   DNS_TYPE_SOA },
@@ -80,8 +81,11 @@ void dnsInit(char *name, ...)
                 }
                 server = ns_calloc(1, sizeof(dnsServer));
                 server->name = ns_strdup(s);
-                server->ipaddr = inet_addr(s);
-                for (next = dnsServers; next && next->next; next = next->next);
+                //Ns_GetSockAddr((struct sockaddr *)&(server->sa), server->name, 0);
+                //server->ipaddr = inet_addr(s);
+                for (next = dnsServers; next && next->next; next = next->next) {
+                    ;
+                }
                 if (!next) {
                     dnsServers = server;
                 } else {
@@ -117,23 +121,16 @@ dnsPacket *dnsLookup(char *name, int type, int *errcode)
     struct timeval tv;
     dnsServer *server = 0;
     dnsPacket *req, *reply;
-    struct sockaddr_in saddr;
     int sock;
 
-    if ((sock = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
-        if (errcode) {
-            *errcode = errno;
-        }
-        return 0;
-    }
     req = dnsPacketCreateQuery(name, type);
     dnsEncodePacket(req);
-    saddr.sin_family = AF_INET;
-    saddr.sin_port = htons(53);
 
     while (1) {
-        int timeout, retries, now;
-	
+        int timeout, retries, now, rc;
+        struct NS_SOCKADDR_STORAGE sa;
+        struct sockaddr           *saPtr = (struct sockaddr *)&sa;
+        
         now = time(0);
         Ns_MutexLock(&dnsMutex);
         retries = dnsResolverRetries;
@@ -165,12 +162,29 @@ dnsPacket *dnsLookup(char *name, int type, int *errcode)
         if (dnsDebug > 5) {
             Ns_Log(Notice, "dnsLookup: %s: resolving %s...", server->name, name);
         }
-        saddr.sin_addr.s_addr = server->ipaddr;
+
+        // todo: don't hard-code port 53 (DNS port)
+        rc = Ns_GetSockAddr(saPtr, server->name, 53);
+        if (rc != TCL_OK) {
+            Ns_Log(Error, "dnsLookup: invalid server name '%s'", server->name);
+            return 0;
+        }
+        
+        if (sock == NS_INVALID_SOCKET) {
+            if ((sock = socket(saPtr->sa_family, SOCK_DGRAM, 0)) < 0) {
+                if (errcode) {
+                    *errcode = errno;
+                }
+                return 0;
+            }
+        }
+        
+        //saddr.sin_addr.s_addr = server->ipaddr;
         while (retries--) {
             int len;
             
             len = sizeof(struct sockaddr_in);
-            if (sendto(sock, req->buf.data + 2, req->buf.size, 0, (struct sockaddr *) &saddr, len) < 0) {
+            if (sendto(sock, req->buf.data + 2, req->buf.size, 0, saPtr, len) < 0) {
                 if (dnsDebug > 3) {
                     Ns_Log(Error, "dnsLookup: %s: sendto: %s", server->name, strerror(errno));
                 }
@@ -236,6 +250,7 @@ dnsPacket *dnsResolve(char *name, int type, char *server, int timeout, int retri
         }
         return 0;
     }
+    /* fprintf(stderr, "==== dnsResolve name <%s> server <%s>\n", name, server);*/
     saddr.sin_addr.s_addr = inet_addr(server);
     saddr.sin_family = AF_INET;
     saddr.sin_port = htons(53);
@@ -271,7 +286,7 @@ dnsPacket *dnsResolve(char *name, int type, char *server, int timeout, int retri
             continue;
         }
         if (dnsDebug > 3) {
-            Ns_Log(Notice, "dnsResolve: %s: received %d bytes from %s", name, len, server);
+            Ns_Log(Notice, "dnsResolve: %s: received %d bytes from server %s", name, len, server);
         }
         if (!(reply = dnsParsePacket((unsigned char*)buf, len))) {
             continue;
@@ -294,15 +309,19 @@ dnsPacket *dnsResolve(char *name, int type, char *server, int timeout, int retri
 
 void dnsRecordDump(Ns_DString *ds, dnsRecord *y)
 {
+    char ipString[NS_IPADDR_SIZE];
+
     if (y == NULL) {
         return;
     }
     Ns_DStringPrintf(ds, "Name=%s, Type=%s(%d), Class=%u, TTL=%lu, Length=%u, ",
                      y->name, dnsTypeStr(y->type), y->type, y->class, y->ttl, y->len);
     switch (y->type) {
-    case DNS_TYPE_A:
-        Ns_DStringPrintf(ds, "IP=%s ", ns_inet_ntoa(y->data.ipaddr));
+    case DNS_TYPE_A: /* fall through */
+    case DNS_TYPE_AAAA:        
+        Ns_DStringPrintf(ds, "IP=%s ", ns_inet_ntop( (struct sockaddr *)&(y->data.sa), ipString, NS_IPADDR_SIZE));
         break;
+       
     case DNS_TYPE_MX:
         if (!y->data.mx) {
             break;
@@ -422,8 +441,9 @@ dnsRecord *dnsRecordCreate(dnsRecord *from)
         rec->ttl = from->ttl;
         rec->len = from->len;
         switch (rec->type) {
-        case DNS_TYPE_A:
-            rec->data.ipaddr.s_addr = from->data.ipaddr.s_addr;
+        case DNS_TYPE_A: /* fall through */
+        case DNS_TYPE_AAAA:
+            rec->data.sa = from->data.sa;
             break;
         case DNS_TYPE_MX:
             rec->data.mx = ns_calloc(1, sizeof(dnsMX));
@@ -469,7 +489,22 @@ dnsRecord *dnsRecordCreate(dnsRecord *from)
     return rec;
 }
 
-dnsRecord *dnsRecordCreateA(const char *name, unsigned long ipaddr)
+dnsRecord *dnsRecordCreateAAAA(const char *name, const char *ipAddr)
+{
+    dnsRecord *y = ns_calloc(1, sizeof(dnsRecord));
+
+    y->nsize = strlen(name);
+    y->name = ns_malloc(y->nsize + 1);
+    strcpy(y->name, name);
+    y->type = DNS_TYPE_AAAA;
+    y->class = DNS_CLASS_INET;
+    y->len = 16;
+    Ns_GetSockAddr((struct sockaddr *)&(y->data.sa), ipAddr, 0);
+    y->ttl = dnsTTL;
+    return y;
+}
+
+dnsRecord *dnsRecordCreateA(const char *name, const char *ipAddr)
 {
     dnsRecord *y = ns_calloc(1, sizeof(dnsRecord));
 
@@ -479,7 +514,7 @@ dnsRecord *dnsRecordCreateA(const char *name, unsigned long ipaddr)
     y->type = DNS_TYPE_A;
     y->class = DNS_CLASS_INET;
     y->len = 4;
-    y->data.ipaddr.s_addr = ipaddr;
+    Ns_GetSockAddr((struct sockaddr *)&(y->data.sa), ipAddr, 0);
     y->ttl = dnsTTL;
     return y;
 }
@@ -610,12 +645,18 @@ Tcl_Obj *dnsRecordCreateTclObj(Tcl_Interp *interp, dnsRecord *drec)
     Tcl_Obj *list = Tcl_NewListObj(0, 0);
 
     while (drec) {
-        Tcl_Obj *obj = Tcl_NewListObj(0, 0);
+        char             ipString[NS_IPADDR_SIZE];
+        struct sockaddr *saPtr;
+        Tcl_Obj          *obj = Tcl_NewListObj(0, 0);
+
         Tcl_ListObjAppendElement(interp, obj, Tcl_NewStringObj(drec->name, -1));
         Tcl_ListObjAppendElement(interp, obj, Tcl_NewStringObj((char *) dnsTypeStr(drec->type), -1));
         switch (drec->type) {
-        case DNS_TYPE_A:
-            Tcl_ListObjAppendElement(interp, obj, Tcl_NewStringObj(ns_inet_ntoa(drec->data.ipaddr), -1));
+        case DNS_TYPE_A: /* fall through */
+        case DNS_TYPE_AAAA:
+            saPtr = (struct sockaddr *)&(drec->data.sa),
+            Tcl_ListObjAppendElement(interp, obj,
+                                     Tcl_NewStringObj(ns_inet_ntop(saPtr, ipString, sizeof(ipString)), -1));
             break;
         case DNS_TYPE_MX:
             if (!drec->data.mx) {
@@ -728,8 +769,10 @@ int dnsRecordSearch(dnsRecord *list, dnsRecord *rec, int replace)
             continue;
         }
         switch (drec->type) {
-        case DNS_TYPE_A:
-            if (rec->data.ipaddr.s_addr == drec->data.ipaddr.s_addr) {
+        case DNS_TYPE_A: /* fall through */
+        case DNS_TYPE_AAAA:
+            if (Ns_SockaddrSameIP((struct sockaddr *)&(rec->data.sa),
+                                  (struct sockaddr *)&(drec->data.sa)) == NS_TRUE) {
                 if (replace) {
                     rec->ttl = drec->ttl;
                 }
@@ -902,15 +945,22 @@ dnsRecord *dnsParseRecord(dnsPacket *pkt, int query)
 
     y = ns_calloc(1, sizeof(dnsRecord));
     /* offset = (pkt->buf.ptr - pkt->buf.data) - 2; */
-    /* The name of the resource */
-    if ((y->nsize = dnsParseName(pkt, &pkt->buf.ptr, name, 255, 0, 0)) < 0) {
+    
+    /* 
+     * Get the name of the resource 
+     */
+    y->nsize = dnsParseName(pkt, &pkt->buf.ptr, name, 255, 0, 0);
+    /* fprintf(stderr, "=== dnsParseRecord name %s, len %d\n", name, y->nsize); */
+    if (y->nsize < 0) {
         snprintf(name, 255, "invalid name: %d %s: ", y->nsize, pkt->buf.ptr);
         goto err;
     }
     y->name = ns_malloc(y->nsize + 1);
     strcpy(y->name, name);
 
-    /* The type of data */
+    /* 
+     * Get the type of data 
+     */
     if (pkt->buf.ptr + 2 > pkt->buf.data + pkt->buf.allocated) {
         strcpy(name, "invalid type position");
         goto err;
@@ -918,7 +968,9 @@ dnsRecord *dnsParseRecord(dnsPacket *pkt, int query)
     memcpy(&us, pkt->buf.ptr, sizeof(us));
     y->type = ntohs(us);
     pkt->buf.ptr += 2;
-    /* The class type */
+    /* 
+     * Get the class type 
+     */
     if (pkt->buf.ptr + 2 > pkt->buf.data + pkt->buf.allocated) {
         strcpy(name, "invalid class position");
         goto err;
@@ -929,7 +981,9 @@ dnsRecord *dnsParseRecord(dnsPacket *pkt, int query)
     /* Query block stops here */
     if (query)
         goto rec;
-    /* Answer blocks carry a TTL and the actual data. */
+    /* 
+     * Answer blocks carry a TTL and the actual data. 
+     */
     if (pkt->buf.ptr + 4 > pkt->buf.data + pkt->buf.allocated) {
         strcpy(name, "invalid TTL position");
         goto err;
@@ -938,7 +992,9 @@ dnsRecord *dnsParseRecord(dnsPacket *pkt, int query)
     y->ttl = ntohl(ul);
 
     pkt->buf.ptr += 4;
-    /* Fetch the resource data. */
+    /* 
+     * Fetch the resource data. 
+     */
     if (pkt->buf.ptr + 2 > pkt->buf.data + pkt->buf.allocated) {
         strcpy(name, "invalid data position");
         goto err;
@@ -959,9 +1015,18 @@ dnsRecord *dnsParseRecord(dnsPacket *pkt, int query)
     }
     switch (y->type) {
     case DNS_TYPE_A:
-        memcpy(&y->data.ipaddr, pkt->buf.ptr, 4);
-        pkt->buf.ptr += 4;
-        break;
+        { struct sockaddr_in *saPtr = (struct sockaddr_in *)&(y->data.sa);
+            memcpy(&(saPtr->sin_addr), pkt->buf.ptr, 4);
+            pkt->buf.ptr += 4;
+            break;
+        }
+    case DNS_TYPE_AAAA:
+        { struct sockaddr_in6 *saPtr = (struct sockaddr_in6 *)&(y->data.sa);
+            memcpy(&(saPtr->sin6_addr), pkt->buf.ptr, 16);
+            pkt->buf.ptr += 16;
+            break;
+        }
+        
     case DNS_TYPE_MX:
         y->data.soa = ns_calloc(1, sizeof(dnsSOA));
         memcpy(&us, pkt->buf.ptr, sizeof(us));
@@ -1214,8 +1279,15 @@ void dnsEncodeRecord(dnsPacket *pkt, dnsRecord *list)
         dnsEncodeBegin(pkt);
         switch (list->type) {
         case DNS_TYPE_A:
-            dnsEncodeData(pkt, &list->data.ipaddr, 4);
-            break;
+            { struct sockaddr_in *saPtr = (struct sockaddr_in *)&(list->data.sa);
+                dnsEncodeData(pkt, &(saPtr->sin_addr), 4);
+                break;
+            }
+        case DNS_TYPE_AAAA:
+            { struct sockaddr_in6 *saPtr = (struct sockaddr_in6 *)&(list->data.sa);
+                dnsEncodeData(pkt, &(saPtr->sin6_addr), 16);
+                break;
+            }
         case DNS_TYPE_MX:
             dnsEncodeShort(pkt, list->data.mx->preference);
             dnsEncodeName(pkt, list->data.mx->name, 1);
@@ -1315,7 +1387,8 @@ dnsPacket *dnsPacketCreateQuery(char *name, int type)
     pkt->buf.data = ns_calloc(1, pkt->buf.allocated);
     /* Ns_Log(Debug,"allocq[%d]: %x: %x",getpid(),pkt,pkt->buf.data); */
     if (name) {
-        dnsRecord *rec = dnsRecordCreateA(name, 0);
+        dnsRecord *rec = dnsRecordCreateA(name, "0.0.0.0");
+        
         dnsPacketAddRecord(pkt, &pkt->qdlist, &pkt->qdcount, rec);
         if (type) {
             rec->type = type;

@@ -28,7 +28,7 @@
 
 typedef struct _dnsClient {
     Ns_RWLock lock;
-    char ipaddr[16];
+    char ipaddr[NS_IPADDR_SIZE];
     Tcl_HashTable list;
     struct _dnsClient *link;
     unsigned long rcount;
@@ -43,7 +43,7 @@ typedef struct _dnsRequest {
     dnsPacket *req;
     dnsPacket *reply;
     dnsClient *client;
-    struct sockaddr_in addr;
+    struct NS_SOCKADDR_STORAGE sa;
     unsigned short proxy_id;
     unsigned short proxy_count;
     unsigned long proxy_time;
@@ -86,12 +86,12 @@ static void DnsTcpThread(void *arg);
 static void DnsProxyThread(void *arg);
 static void DnsQueueListenThread(void *arg);
 static void DnsQueueRequestThread(void *arg);
-static dnsClient *DnsClientFind(char *host, struct in_addr addr);
+static dnsClient *DnsClientFind(char *host, struct sockaddr *saPtr);
 static dnsClient *DnsClientCreate(char *host);
 static void DnsClientLink(char *host, char *host2);
-static int DnsClientResolve(char *host, struct in_addr *addr);
+static int DnsClientResolve(char *host, struct sockaddr *saPtr);
 
-static unsigned short dnsID = 0;
+static unsigned short dnsID = 0u;
 static int dnsPort;
 static int dnsReadTimeout;
 static int dnsWriteTimeout;
@@ -101,7 +101,7 @@ static int dnsCacheTTL;
 static int dnsUdpSock;
 static int dnsTcpSock;
 static int dnsProxyPort;
-static int dnsProxySock;
+static int dnsProxySock = -1;
 static int dnsThreads;
 static int dnsRcvBuf;
 static int dnsProxyRetries;
@@ -109,12 +109,16 @@ static const char *dnsProxyHost = NULL;
 static const char *dnsDefaultHost = NULL;
 static Ns_Cond dnsProxyCond;
 static Ns_Mutex dnsProxyMutex;
-static dnsRequest *dnsProxyQueue = 0;
-static struct sockaddr_in dnsProxyAddr;
+static dnsRequest *dnsProxyQueue = NULL;
+//static struct sockaddr_in dnsProxyAddr;
+static struct NS_SOCKADDR_STORAGE dnsProxyAddr;
+static struct sockaddr *dnsProxyAddrPtr = (struct sockaddr *)&dnsProxyAddr;
 static dnsQueue dnsQueues[DNS_QUEUE_SIZE];
 static Ns_RWLock dnsClientLock;
 static Tcl_HashTable dnsClientList;
 static dnsClient dnsClientDflt;
+static Ns_LogSeverity DnsdDebug;    /* Severity at which to log verbose debugging. */
+
 
 NS_EXPORT int Ns_ModuleVersion = 1;
 
@@ -124,8 +128,11 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
 
     Ns_Log(Notice, "nsdns module version %s server: %s", DNS_VERSION, server);
 
+    DnsdDebug = Ns_CreateLogSeverity("Debug(dnsd)");
+    
     Ns_RWLockInit(&dnsClientLock);
-    Tcl_InitHashTable(&dnsClientList, TCL_ONE_WORD_KEYS);
+    //Tcl_InitHashTable(&dnsClientList, TCL_ONE_WORD_KEYS);
+    Tcl_InitHashTable(&dnsClientList, TCL_STRING_KEYS);
     memset(&dnsClientDflt, 0, sizeof(dnsClient));
     strcpy(dnsClientDflt.ipaddr, "0.0.0.0");
     Ns_RWLockInit(&dnsClientDflt.lock);
@@ -140,6 +147,9 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
     }
     if (!Ns_ConfigGetInt(path, "debug", &dnsDebug)) {
         dnsDebug = 0;
+    } else {
+        Ns_LogSeveritySetEnabled(DnsdDebug, NS_TRUE);
+        Ns_Log(DnsdDebug, "debug is enabled");
     }
     if (!Ns_ConfigGetInt(path, "port", &dnsPort)) {
         dnsPort = 5353;
@@ -181,13 +191,13 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
         
         /* UDP socket */
         if ((dnsUdpSock = Ns_SockListenUdp(address, dnsPort)) == -1) {
-            Ns_Log(Error, "nsdns: udp: %s:%d: couldn't create socket: %s", 
+            Ns_Log(Error, "nsdns: udp: [%s]:%d: couldn't create socket: %s", 
 		   address, dnsPort, strerror(errno));
             return NS_ERROR;
         }
         /* TCP socket */
         if ((dnsTcpSock = Ns_SockListen(address, dnsPort)) == -1) {
-            Ns_Log(Error, "nsdns: tcp: %s:%d: couldn't create socket: %s", 
+            Ns_Log(Error, "nsdns: tcp: [%s]:%d: couldn't create socket: %s", 
 		   address, dnsPort, strerror(errno));
             return NS_ERROR;
         }
@@ -199,13 +209,16 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
             dnsProxyPort = 53;
         }
         if ((dnsProxyHost = Ns_ConfigGetValue(path, "proxyhost"))) {
-            if (Ns_GetSockAddr(&dnsProxyAddr, dnsProxyHost, dnsProxyPort) != NS_OK ||
-                (dnsProxySock = socket(AF_INET, SOCK_DGRAM, 0)) == -1) {
+            if (Ns_GetSockAddr(dnsProxyAddrPtr, dnsProxyHost, dnsProxyPort) == NS_OK) {
+                dnsProxySock = socket(dnsProxyAddrPtr->sa_family, SOCK_DGRAM, 0);
+            }
+            if (dnsProxySock == -1) {
                 ns_sockclose(dnsUdpSock);
                 ns_sockclose(dnsTcpSock);
-                Ns_Log(Notice, "nsdns: create proxy thread %s:%d: %s", dnsProxyHost, dnsProxyPort, strerror(errno));
+                Ns_Log(Error, "nsdns: create proxy thread [%s]:%d: %s", dnsProxyHost, dnsProxyPort, strerror(errno));
                 return NS_ERROR;
             }
+            Ns_Log(DnsdDebug, "nsdns: create proxy thread, host %s port %d", dnsProxyHost, dnsProxyPort);
             Ns_ThreadCreate(DnsProxyThread, 0, 0, 0);
         }
         if (dnsRcvBuf) {
@@ -226,13 +239,13 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
         /* Start listen thread */
         Ns_ThreadCreate(DnsQueueListenThread, 0, 0, 0);
     }
-    if (dnsDebug) {
+    if (1 || dnsDebug) {
         Tcl_SetPanicProc(DnsPanic);
         ns_signal(SIGSEGV, DnsSegv);
         Ns_Log(Notice, "nsdns: SEGV and Panic trapping is activated");
     }
     Ns_MutexSetName2(&dnsProxyMutex, "nsdns", "proxy");
-    Ns_Log(Notice, "nsdns: version %s listening on %s:%d, FD %d:%d", 
+    Ns_Log(Notice, "nsdns: version %s listening on [%s]:%d, (udp %d, tcp %d)", 
 	   DNS_VERSION, address ? address : "0.0.0.0", dnsPort,
            dnsUdpSock, dnsTcpSock);
     Ns_TclRegisterTrace(server, DnsInterpInit, 0, NS_TCL_TRACE_CREATE);
@@ -253,7 +266,7 @@ static void DnsPanic(const char *fmt, ...)
     va_list ap;
 
     va_start(ap, fmt);
-    Ns_Log(Error, "nsdns[%d]: panic %p", getpid(), va_arg(ap, char *));
+    Ns_Log(Error, "nsdns[%d]: panic %p", getpid(), (void *)va_arg(ap, char *));
     va_end(ap);
     ns_sockclose(dnsUdpSock);
     ns_sockclose(dnsTcpSock);
@@ -286,8 +299,9 @@ static int DnsCmd(ClientData arg, Tcl_Interp *interp, int objc, Tcl_Obj *CONST o
         "config", 0
     };
     int i, cmd;
-    struct in_addr addr = {0};
-    int argc = objc, argp = 2;
+    struct NS_SOCKADDR_STORAGE sa;
+    struct sockaddr *saPtr = (struct sockaddr *)&sa;
+    int argc = objc, qtype, argp = 2;
     char tmp[128];
     dnsRecord *drec;
     Tcl_HashEntry *hrec;
@@ -316,7 +330,7 @@ static int DnsCmd(ClientData arg, Tcl_Interp *interp, int objc, Tcl_Obj *CONST o
             Tcl_WrongNumArgs(interp, 2, objv, "client name type value ?ttl?");
             return TCL_ERROR;
         }
-        client = DnsClientFind(Tcl_GetString(objv[2]), addr);
+        client = DnsClientFind(Tcl_GetString(objv[2]), saPtr);
         /* Create new client */
         if (client == &dnsClientDflt) {
             client = DnsClientCreate(Tcl_GetString(objv[2]));
@@ -329,9 +343,15 @@ static int DnsCmd(ClientData arg, Tcl_Interp *interp, int objc, Tcl_Obj *CONST o
             Tcl_WrongNumArgs(interp, 2, objv, "name type value ?ttl?");
             return TCL_ERROR;
         }
-        switch (dnsType(Tcl_GetString(objv[argp + 1]))) {
-        case DNS_TYPE_A:
-            drec = dnsRecordCreateA(Tcl_GetString(objv[argp]), inet_addr(Tcl_GetString(objv[argp + 2])));
+        qtype = dnsType(Tcl_GetString(objv[argp + 1]));
+        switch (qtype) {
+        case DNS_TYPE_A: /* fall through */
+        case DNS_TYPE_AAAA:
+            if (qtype == DNS_TYPE_A) {
+                drec = dnsRecordCreateA(Tcl_GetString(objv[argp]), Tcl_GetString(objv[argp + 2]));
+            } else {
+                drec = dnsRecordCreateAAAA(Tcl_GetString(objv[argp]), Tcl_GetString(objv[argp + 2]));                
+            }
             if (objc > 5) {
                 drec->ttl = atoi(Tcl_GetString(objv[argp + 3]));
             }
@@ -391,7 +411,7 @@ static int DnsCmd(ClientData arg, Tcl_Interp *interp, int objc, Tcl_Obj *CONST o
             Tcl_WrongNumArgs(interp, 2, objv, "client name type ?value?");
             return TCL_ERROR;
         }
-        client = DnsClientFind(Tcl_GetString(objv[2]), addr);
+        client = DnsClientFind(Tcl_GetString(objv[2]), saPtr);
         /* Ignore unknown clients */
         if (client == &dnsClientDflt) {
             break;
@@ -434,7 +454,7 @@ static int DnsCmd(ClientData arg, Tcl_Interp *interp, int objc, Tcl_Obj *CONST o
             Tcl_WrongNumArgs(interp, 2, objv, "client name");
             return TCL_ERROR;
         }
-        client = DnsClientFind(Tcl_GetString(objv[2]), addr);
+        client = DnsClientFind(Tcl_GetString(objv[2]), saPtr);
         /* Ignore unknown clients */
         if (client == &dnsClientDflt) {
             break;
@@ -456,13 +476,15 @@ static int DnsCmd(ClientData arg, Tcl_Interp *interp, int objc, Tcl_Obj *CONST o
 
     case cmdClientStats:{
         char *ptr, *stats;
+        
         Ns_RWLockWrLock(&dnsClientLock);
         hrec = Tcl_FirstHashEntry(&dnsClientList, &search);
         while (hrec) {
             client = Tcl_GetHashValue(hrec);
             stats = (char *) Tcl_HashStats(&client->list);
-            addr.s_addr = (unsigned long) Tcl_GetHashKey(&dnsClientList, hrec);
-            Tcl_AppendElement(interp, ns_inet_ntoa(addr));
+            //addr.s_addr = (unsigned long) Tcl_GetHashKey(&dnsClientList, hrec);
+            //Tcl_AppendElement(interp, ns_inet_ntoa(addr));
+            Tcl_AppendElement(interp, Tcl_GetHashKey(&dnsClientList, hrec));
             sprintf(tmp, "%lu", client->rcount);
             Tcl_AppendElement(interp, tmp);
             for (ptr = stats; *ptr; ptr++) {
@@ -482,17 +504,18 @@ static int DnsCmd(ClientData arg, Tcl_Interp *interp, int objc, Tcl_Obj *CONST o
         Ns_RWLockWrLock(&dnsClientLock);
         hrec = Tcl_FirstHashEntry(&dnsClientList, &search);
         while (hrec) {
-            addr.s_addr = (unsigned long) Tcl_GetHashKey(&dnsClientList, hrec);
-            Tcl_AppendElement(interp, ns_inet_ntoa(addr));
+            //addr.s_addr = (unsigned long) Tcl_GetHashKey(&dnsClientList, hrec);
+            //Tcl_AppendElement(interp, ns_inet_ntoa(addr));
+            Tcl_AppendElement(interp, Tcl_GetHashKey(&dnsClientList, hrec));
             hrec = Tcl_NextHashEntry(&search);
         }
         Ns_RWLockUnlock(&dnsClientLock);
         break;
 
-    case cmdList:{
+    case cmdList: {
         Tcl_Obj *list = Tcl_NewListObj(0, 0);
         if (objc > 2) {
-            client = DnsClientFind(Tcl_GetString(objv[2]), addr);
+            client = DnsClientFind(Tcl_GetString(objv[2]), saPtr);
         }
         Ns_RWLockRdLock(&client->lock);
         hrec = Tcl_FirstHashEntry(&client->list, &search);
@@ -507,7 +530,7 @@ static int DnsCmd(ClientData arg, Tcl_Interp *interp, int objc, Tcl_Obj *CONST o
 
     case cmdFlush:
         if (objc > 2) {
-            client = DnsClientFind(Tcl_GetString(objv[2]), addr);
+            client = DnsClientFind(Tcl_GetString(objv[2]), saPtr);
             /* Ignore unknown clients */
             if (client == &dnsClientDflt) {
                 break;
@@ -615,8 +638,7 @@ static int DnsCmd(ClientData arg, Tcl_Interp *interp, int objc, Tcl_Obj *CONST o
                 !strcmp("retry", key) ||
                 !strcmp("failuretimeout", key)) {
                 dnsInit(key, atoi(Tcl_GetString(objv[i + 1])));
-            } else
-            if (!strcmp("nameserver", key)) {
+            } else if (!strcmp("nameserver", key)) {
                 dnsInit(key, Tcl_GetString(objv[i + 1]));
             }
         }
@@ -627,26 +649,27 @@ static int DnsCmd(ClientData arg, Tcl_Interp *interp, int objc, Tcl_Obj *CONST o
 
 static void DnsQueueListenThread(void *arg)
 {
-    int len = sizeof(struct sockaddr_in);
-    dnsRequest *req, buf;
+    dnsRequest    *req, buf;
     struct timeval recv_time;
-    int id = 0;
+    int            id = 0;
 
     memset(&buf, 0, sizeof(buf));
     Ns_ThreadSetName("nsdns:thread");
 
     while (1) {
-        if ((buf.size = recvfrom(dnsUdpSock, buf.buffer, DNS_BUF_SIZE - 1, 0, (struct sockaddr *) &buf.addr, (socklen_t*)&len)) <= 0) {
-            if (dnsDebug > 1) {
-                Ns_Log(Notice, "nsdns: recvfrom error: %s", strerror(errno));
-            }
+        socklen_t        socklen = (socklen_t)sizeof(buf.sa);
+        struct sockaddr *saPtr = (struct sockaddr *)&(buf.sa);
+        char             ipString[NS_IPADDR_SIZE];
+
+        if ((buf.size = recvfrom(dnsUdpSock, buf.buffer, DNS_BUF_SIZE - 1, 0, saPtr, &socklen)) <= 0) {
+            Ns_Log(Error, "nsdns: recvfrom error (udp sock %d): %s", dnsUdpSock, strerror(errno));
             continue;
         }
         buf.buffer[buf.size] = 0;
         gettimeofday(&recv_time, 0);
-        if (dnsDebug > 0) {
-            Ns_Log(Notice, "nsdns: received %d bytes from %s", buf.size, ns_inet_ntoa(buf.addr.sin_addr));
-        }
+        
+        Ns_Log(DnsdDebug, "nsdns: received %d bytes from %s", buf.size,
+               ns_inet_ntop(saPtr, ipString, sizeof(ipString)));
         /*
          *  Link new job into the queue
          */
@@ -659,6 +682,7 @@ static void DnsQueueListenThread(void *arg)
             req = ns_calloc(1, sizeof(dnsRequest));
         }
         memcpy(req, &buf, sizeof(buf));
+
         req->recv_time = recv_time;
         if (dnsQueues[id].tail) {
             dnsQueues[id].tail->next = req;
@@ -717,7 +741,7 @@ static void DnsQueueRequestThread(void *arg)
         if ((req->req = dnsParsePacket((unsigned char*)req->buffer, req->size))) {
             /* Prepare reply header */
             req->reply = dnsPacketCreateReply(req->req);
-            req->client = DnsClientFind(0, req->addr.sin_addr);
+            req->client = DnsClientFind(NULL, (struct sockaddr *)&(req->sa));
             switch (dnsRequestHandle(req)) {
             case 1:
                 /* Proxy will handle request */
@@ -754,18 +778,19 @@ static bool DnsTcpListen(NS_SOCKET sock, void *si, unsigned int when)
 {
     struct {
         NS_SOCKET sock;
-        struct sockaddr_in saddr;
+        struct NS_SOCKADDR_STORAGE sa;
     } arg;
-    socklen_t saddr_len = (socklen_t)sizeof(struct sockaddr_in);
+    socklen_t saddr_len = (socklen_t)sizeof(arg.sa);
+    char      ipString[NS_IPADDR_SIZE];
 
     switch (when) {
     case NS_SOCK_READ:
-        if ((arg.sock = Ns_SockAccept(sock, (struct sockaddr *) &arg.saddr, &saddr_len)) == NS_INVALID_SOCKET) {
+        if ((arg.sock = Ns_SockAccept(sock, (struct sockaddr *) &arg.sa, &saddr_len)) == NS_INVALID_SOCKET) {
             break;
         }
-        if (dnsDebug > 3) {
-            Ns_Log(Notice, "DnsTcpListen: connection from %s", ns_inet_ntoa(arg.saddr.sin_addr));
-        }
+        Ns_Log(DnsdDebug, "DnsTcpListen: connection from %s",
+               ns_inet_ntop((struct sockaddr *)&(arg.sa), ipString, sizeof(ipString) ));
+
         Ns_ThreadCreate(DnsTcpThread, (void *) &arg, 0, 0);
         return NS_TRUE;
     }
@@ -776,7 +801,7 @@ static bool DnsTcpListen(NS_SOCKET sock, void *si, unsigned int when)
 static void DnsTcpThread(void *sock)
 {
     struct {
-        struct sockaddr_in saddr;
+        struct NS_SOCKADDR_STORAGE sa;
         NS_SOCKET sock;
     } arg;
     short len;
@@ -792,8 +817,8 @@ static void DnsTcpThread(void *sock)
         return;
     }
     req->flags |= DNS_TCP;
-    memcpy(&req->addr, &arg.saddr, sizeof(req->addr));
-    req->client = DnsClientFind(0, req->addr.sin_addr);
+    memcpy(&req->sa, &arg.sa, sizeof(req->sa));
+    req->client = DnsClientFind(NULL, (struct sockaddr *)&(req->sa));
     switch (dnsRequestHandle(req)) {
     case 1:
         /* Request will handled by proxy queue manager */
@@ -813,20 +838,27 @@ static void DnsProxyThread(void *arg)
     fd_set rfd;
     dnsRequest *req;
     char buf[DNS_BUF_SIZE + 1];
+    char ipString[NS_IPADDR_SIZE];
     struct timeval timeout;
-    struct sockaddr_in addr;
+    //struct sockaddr_in addr;
+    struct NS_SOCKADDR_STORAGE sa;
+    struct sockaddr           *saPtr = (struct sockaddr *)&sa;
 
-    Ns_Log(Notice, "nsdns: proxy thread started, proxy %s(%s):%d FD %d",
-           dnsProxyHost, ns_inet_ntoa(dnsProxyAddr.sin_addr), dnsProxyPort, dnsProxySock);
+    Ns_Log(Notice, "nsdns: proxy thread started, proxy %s [%s]:%d FD %d",
+           dnsProxyHost, ns_inet_ntop(dnsProxyAddrPtr, ipString, sizeof(ipString)),
+           dnsProxyPort, dnsProxySock);
 
     while (1) {
+
         Ns_MutexLock(&dnsProxyMutex);
         while (!dnsProxyQueue) {
             Ns_CondWait(&dnsProxyCond, &dnsProxyMutex);
         }
         now = time(0);
-        for (req = dnsProxyQueue; req;) {
+        for (req = dnsProxyQueue; req != NULL;) {
             if (now - req->proxy_time > dnsProxyTimeout) {
+                char ipString[NS_IPADDR_SIZE];
+
                 /* First time, prepare for proxying, use our own id sequence to
                  * keep track of forwarded requests */
                 if (!req->proxy_count) {
@@ -857,9 +889,15 @@ static void DnsProxyThread(void *arg)
                     continue;
                 }
                 /* Repeat forwarding request */
+
+                Ns_Log(DnsdDebug, "sending proxy request to [%s]:%d",
+                       ns_inet_ntop(dnsProxyAddrPtr, ipString, sizeof(ipString)),
+                       Ns_SockaddrGetPort(dnsProxyAddrPtr));
+                
                 sendto(dnsProxySock,
                        req->req->buf.data + 2,
-                       req->req->buf.size, 0, (struct sockaddr *) &dnsProxyAddr, sizeof(struct sockaddr_in));
+                       req->req->buf.size, 0,
+                       dnsProxyAddrPtr, Ns_SockaddrGetSockLen(dnsProxyAddrPtr));
                 req->proxy_count++;
                 req->proxy_time = now;
                 dnsPacketLog(req->req, 4, "Sending to proxy:");
@@ -871,24 +909,43 @@ static void DnsProxyThread(void *arg)
         timeout.tv_sec = 1;
         FD_ZERO(&rfd);
         FD_SET(dnsProxySock, &rfd);
+
+        /* fprintf(stderr, "=== call select on rfd %d \n", dnsProxySock);*/
+        
         if (select(dnsProxySock + 1, &rfd, 0, 0, &timeout) <= 0) {
+            /* fprintf(stderr, "=== select returned timeout or error\n"); */
             continue;
         }
-        len = sizeof(struct sockaddr_in);
-        if ((len = recvfrom(dnsProxySock, buf, DNS_BUF_SIZE, 0, (struct sockaddr *) &addr, (socklen_t*)&len)) <= 0 ||
-            addr.sin_addr.s_addr != dnsProxyAddr.sin_addr.s_addr) {
-            if (errno && errno != EAGAIN && errno != EINTR) {
-                Ns_Log(Error, "nsdns: recvfrom error %s: %s", ns_inet_ntoa(addr.sin_addr), strerror(errno));
+                
+        len = sizeof(struct NS_SOCKADDR_STORAGE);
+        len = recvfrom(dnsProxySock, buf, DNS_BUF_SIZE, 0, saPtr, (socklen_t*)&len);
+
+        Ns_Log(DnsdDebug, "receive reply from [%s]:%d, len = %d, isproxy %d",
+               ns_inet_ntop(saPtr, ipString, sizeof(ipString)),
+               Ns_SockaddrGetPort(saPtr), len,
+               Ns_SockaddrSameIP(saPtr, dnsProxyAddrPtr));
+        
+        if (len < 0
+            || Ns_SockaddrSameIP(saPtr, dnsProxyAddrPtr) == NS_FALSE
+            ) {
+            if (errno != 0 && errno != EAGAIN && errno != EINTR) {
+                char ipString[NS_IPADDR_SIZE];
+
+                Ns_Log(Error, "nsdns: recvfrom error %s: %s",
+                       ns_inet_ntop(saPtr, ipString, sizeof(ipString)),
+                       strerror(errno));
             }
             continue;
         }
-        if (dnsDebug > 3) {
-            Ns_Log(Notice, "DnsProxyThread: received %d bytes from %s", len, ns_inet_ntoa(dnsProxyAddr.sin_addr));
-        }
+             
+        Ns_Log(DnsdDebug, "DnsProxyThread: received %d bytes from %s", len,
+               ns_inet_ntop(dnsProxyAddrPtr, ipString, sizeof(ipString)));
+
         Ns_MutexLock(&dnsProxyMutex);
-        for (req = dnsProxyQueue; req; req = req->next) {
+        for (req = dnsProxyQueue; req != NULL; req = req->next) {
 	  /* Find request with received ID and remove from the queue */
 	    unsigned short *buf_id = (unsigned short *) buf;
+            
             if (req->req->id == ntohs(*buf_id)) {
                 if (!req->prev) {
                     dnsProxyQueue = req->next;
@@ -901,6 +958,9 @@ static void DnsProxyThread(void *arg)
                 break;
             }
         }
+        Ns_Log(DnsdDebug, "DnsProxyThread: found requests with id %hu => req %p",
+               *(unsigned short *) buf, (void *)req);
+        
         Ns_MutexUnlock(&dnsProxyMutex);
         /* Forward reply back to the client and cache locally */
         if (req != NULL) {
@@ -1104,7 +1164,7 @@ static int dnsRequestFind(dnsRequest *req, dnsRecord *qlist)
                     /* Put IP address of the nameserver into additional section */
                     if ((nrec = Tcl_FindHashEntry(&req->client->list, qcache->data.name))) {
                         for (ncache = Tcl_GetHashValue(nrec); ncache; ncache = ncache->next) {
-                            if (ncache->type == DNS_TYPE_A) {
+                            if ( ncache->type == DNS_TYPE_A || ncache->type == DNS_TYPE_AAAA ) {
                                 dnsPacketAddRecord(req->reply, &req->reply->arlist, &req->reply->arcount,
                                                    dnsRecordCreate(ncache));
                             }
@@ -1198,9 +1258,9 @@ static int dnsRequestHandle(dnsRequest *req)
                 return 1;
             }
             /* Default host */
-            if (dnsDefaultHost) {
+            if (dnsDefaultHost != NULL) {
                 dnsPacketAddRecord(req->reply, &req->reply->anlist, &req->reply->ancount,
-                                   dnsRecordCreateA(dnsDefaultHost, inet_addr(dnsDefaultHost)));
+                                   dnsRecordCreateA(dnsDefaultHost, dnsDefaultHost));
                 return 0;
             }
             /* Otherwise reply with not found reply code */
@@ -1218,16 +1278,23 @@ static int dnsRequestHandle(dnsRequest *req)
 static int dnsRequestSend(dnsRequest *req)
 {
     int rc;
+    char ipString[NS_IPADDR_SIZE];
 
     dnsEncodePacket(req->reply);
     /* TCP connection requires packet length before the reply packet */
-    if (req->flags & DNS_TCP) {
+    if ((req->flags & DNS_TCP) != 0u) {
+        Ns_Log(DnsdDebug, "send reply via TCP");
         rc = dnsWrite(req->sock, req->reply->buf.data, req->reply->buf.size + 2);
         dnsPacketLog(req->reply, 5, "Send TCP:");
     } else {
+        struct sockaddr *saPtr = (struct sockaddr *)&(req->sa);
+        
+        Ns_Log(DnsdDebug, "send reply via UDP to [%s]:%d",
+               ns_inet_ntop(saPtr, ipString, sizeof(ipString)),
+               Ns_SockaddrGetPort(saPtr));
         rc = sendto(req->sock,
                     req->reply->buf.data + 2,
-                    req->reply->buf.size, 0, (struct sockaddr *) &req->addr, sizeof(struct sockaddr_in));
+                    req->reply->buf.size, 0, saPtr, Ns_SockaddrGetSockLen(saPtr));
         dnsPacketLog(req->reply, 5, "Send UDP:");
     }
     return rc;
@@ -1287,20 +1354,28 @@ static void dnsRecordCache(dnsClient *client, dnsRecord **list)
 static dnsClient *DnsClientCreate(char *host)
 {
     int new;
-    struct in_addr addr;
     dnsClient *client;
     Tcl_HashEntry *entry;
+    struct NS_SOCKADDR_STORAGE sa;
+    struct sockaddr *saPtr = (struct sockaddr *)&sa;
+    char ipString[NS_IPADDR_SIZE];
 
-    if (DnsClientResolve(host, &addr) == NS_ERROR) {
+    if (DnsClientResolve(host, saPtr) == NS_ERROR) {
         Ns_Log(Error, "DnsClientAdd: unable to resolve %s", host);
-        return 0;
+        return NULL;
     }
+
+    ns_inet_ntop(saPtr, ipString, sizeof(ipString));
+    Ns_Log(Notice, "DnsClientAdd: <%s> resolved to %s", host, ipString);
+    
     Ns_RWLockWrLock(&dnsClientLock);
-    entry = Tcl_CreateHashEntry(&dnsClientList, (char *)(intptr_t)addr.s_addr, &new);
+    entry = Tcl_CreateHashEntry(&dnsClientList, ipString, &new);
     Ns_RWLockUnlock(&dnsClientLock);
-    if (new) {
+    fprintf(stderr, "==== DnsClientCreate for <%s> is new %d\n", ipString, new);
+    if (new > 0) {
         client = ns_calloc(1, sizeof(dnsClient));
-        strcpy(client->ipaddr, ns_inet_ntoa(addr));
+        strcpy(client->ipaddr, ipString);
+        
         Ns_RWLockInit(&client->lock);
         Tcl_InitHashTable(&client->list, TCL_STRING_KEYS);
         Tcl_SetHashValue(entry, (ClientData) client);
@@ -1308,24 +1383,44 @@ static dnsClient *DnsClientCreate(char *host)
     return Tcl_GetHashValue(entry);
 }
 
-static dnsClient *DnsClientFind(char *host, struct in_addr addr)
+static dnsClient *DnsClientFind(char *host, struct sockaddr *saPtr)
 {
     dnsClient *client;
     Tcl_HashEntry *entry;
+    char ipString[NS_IPADDR_SIZE];
 
-    if (host && DnsClientResolve(host, &addr) == NS_ERROR) {
+    if (host != NULL && DnsClientResolve(host, saPtr) == NS_ERROR) {
         Ns_Log(Error, "DnsClientClear: unable to resolve %s", host);
         return &dnsClientDflt;
     }
+    ns_inet_ntop(saPtr, ipString, sizeof(ipString));
+
     Ns_RWLockRdLock(&dnsClientLock);
-    entry = Tcl_FindHashEntry(&dnsClientList, (char *)(intptr_t) addr.s_addr);
+    entry = Tcl_FindHashEntry(&dnsClientList, ipString);
     Ns_RWLockUnlock(&dnsClientLock);
-    if (entry) {
+    /*fprintf(stderr, "DnsClientFind => ipString <%s> -> entry %p\n", ipString, (void *)entry);*/
+    if (entry != NULL) {
         client = Tcl_GetHashValue(entry);
         if (client->link) {
             client = client->link;
         }
         return client;
+    } else {
+
+        Ns_Log(Warning, "Dns client [%s] not found, returning default address", ipString);
+#if 0
+        { 
+            Tcl_HashSearch  search;
+            Tcl_HashEntry  *hPtr;
+
+            hPtr = Tcl_FirstHashEntry(&dnsClientList, &search);
+            while (hPtr != NULL) {
+                fprintf(stderr, "... client entry <%s>\n", Tcl_GetHashKey(&dnsClientList, hPtr));
+                hPtr = Tcl_NextHashEntry(&search);
+            }
+            fprintf(stderr, "... DONE\n");
+        }
+#endif        
     }
     return &dnsClientDflt;
 }
@@ -1339,17 +1434,14 @@ static void DnsClientLink(char *host, char *host2)
     }
 }
 
-static int DnsClientResolve(char *host, struct in_addr *addr)
+static int DnsClientResolve(char *host, struct sockaddr *saPtr)
 {
-    struct sockaddr_in sa;
-
-    if (!host) {
+    if (host == NULL) {
         host = Ns_InfoHostname();
     }
-    if (Ns_GetSockAddr(&sa, host, 0) != NS_OK) {
+    if (Ns_GetSockAddr(saPtr, host, 0) != NS_OK) {
         return NS_ERROR;
     }
-    *addr = sa.sin_addr;
     return NS_OK;
 }
 

@@ -23,12 +23,12 @@
  *
  */
 
-#define DNS_VERSION "0.7.7"
+#define DNS_VERSION "0.8.0"
 
 /* DNS flags */
-#define DNS_TCP                 0x0001
-#define DNS_PROXY               0x0002
-#define DNS_NAPTR_REGEXP        0x0004
+#define DNS_TCP                 0x0001u
+#define DNS_PROXY               0x0002u
+#define DNS_NAPTR_REGEXP        0x0004u
 
 /* DNS record types */
 #define	DNS_HEADER_LEN          12
@@ -42,6 +42,7 @@
 #define DNS_TYPE_MINFO          14
 #define DNS_TYPE_MX             15
 #define DNS_TYPE_TXT            16
+#define DNS_TYPE_AAAA           28
 #define DNS_TYPE_SRV            33
 #define DNS_TYPE_NAPTR          35
 #define DNS_TYPE_OPT            41
@@ -130,7 +131,8 @@ typedef struct _dnsRecord {
     short len;
     union {
       char *name;
-      struct in_addr ipaddr;
+      //struct in_addr ipaddr;
+      struct NS_SOCKADDR_STORAGE sa;
       dnsMX *mx;
       dnsNAPTR *naptr;
       dnsSOA *soa;
@@ -172,7 +174,8 @@ void dnsRecordFree(dnsRecord *pkt);
 void dnsRecordDestroy(dnsRecord **pkt);
 int dnsRecordSearch(dnsRecord *list,dnsRecord *rec,int replace);
 dnsRecord *dnsRecordCreate(dnsRecord *from);
-dnsRecord *dnsRecordCreateA(const char *name,unsigned long ipaddr);
+dnsRecord *dnsRecordCreateA(const char *name, const char *ipaddr);
+dnsRecord *dnsRecordCreateAAAA(const char *name, const char *ipaddr);
 dnsRecord *dnsRecordCreateNS(char *name,char *data);
 dnsRecord *dnsRecordCreateCNAME(char *name,char *data);
 dnsRecord *dnsRecordCreatePTR(char *name,char *data);
@@ -207,7 +210,7 @@ void dnsEncodeRecord(dnsPacket *pkt,dnsRecord *list);
 void dnsEncodePacket(dnsPacket *pkt);
 dnsPacket *dnsPacketCreateReply(dnsPacket *req);
 dnsPacket *dnsPacketCreateQuery(char *name,int type);
-void dnsPacketLog(dnsPacket *pkt,int level,char *text, ...);
+void dnsPacketLog(dnsPacket *pkt, int level,char *text, ...);
 void dnsPacketFree(dnsPacket *pkt,int type);
 int dnsPacketAddRecord(dnsPacket *pkt,dnsRecord **list,short *count,dnsRecord *rec);
 int dnsPacketInsertRecord(dnsPacket * pkt, dnsRecord ** list, short *count, dnsRecord * rec);

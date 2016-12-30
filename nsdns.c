@@ -122,7 +122,7 @@ static Ns_LogSeverity DnsdDebug;    /* Severity at which to log verbose debuggin
 
 NS_EXPORT int Ns_ModuleVersion = 1;
 
-NS_EXPORT int Ns_ModuleInit(char *server, char *module)
+NS_EXPORT int Ns_ModuleInit(const char *server, const char *module)
 {
     const char *path, *address;
 
@@ -190,7 +190,7 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
         int n, i;
         
         /* UDP socket */
-        if ((dnsUdpSock = Ns_SockListenUdp(address, dnsPort)) == -1) {
+        if ((dnsUdpSock = Ns_SockListenUdp(address, dnsPort, NS_FALSE)) == -1) {
             Ns_Log(Error, "nsdns: udp: [%s]:%d: couldn't create socket: %s", 
 		   address, dnsPort, strerror(errno));
             return NS_ERROR;

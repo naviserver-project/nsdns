@@ -29,24 +29,27 @@
 #define DNS_TCP                 0x0001u
 #define DNS_PROXY               0x0002u
 #define DNS_NAPTR_REGEXP        0x0004u
+#define DNS_HEADER_LEN          12
 
 /* DNS record types */
-#define	DNS_HEADER_LEN          12
-#define DNS_TYPE_A              1
-#define DNS_TYPE_NS             2
-#define DNS_TYPE_CNAME          5
-#define DNS_TYPE_SOA            6
-#define DNS_TYPE_WKS            11
-#define DNS_TYPE_PTR            12
-#define DNS_TYPE_HINFO          13
-#define DNS_TYPE_MINFO          14
-#define DNS_TYPE_MX             15
-#define DNS_TYPE_TXT            16
-#define DNS_TYPE_AAAA           28
-#define DNS_TYPE_SRV            33
-#define DNS_TYPE_NAPTR          35
-#define DNS_TYPE_OPT            41
-#define DNS_TYPE_ANY            255
+typedef enum {
+  DNS_TYPE_A =             1,
+  DNS_TYPE_NS =            2,
+  DNS_TYPE_CNAME =         5,
+  DNS_TYPE_SOA =           6,
+  DNS_TYPE_WKS =           11,
+  DNS_TYPE_PTR =           12,
+  DNS_TYPE_HINFO =         13,
+  DNS_TYPE_MINFO =         14,
+  DNS_TYPE_MX =            15,
+  DNS_TYPE_TXT =           16,
+  DNS_TYPE_AAAA =          28,
+  DNS_TYPE_SRV =           33,
+  DNS_TYPE_NAPTR =         35,
+  DNS_TYPE_OPT =           41,
+  DNS_TYPE_ANY =           255
+} dnsType_t;
+
 #define DNS_DEFAULT_TTL         (60 * 60)
 #define DNS_CLASS_INET          1
 
@@ -125,7 +128,7 @@ typedef struct _dnsRecord {
     struct _dnsRecord *next,*prev;
     char *name;
     short nsize;
-    unsigned short type;
+    dnsType_t type;
     unsigned short class;
     unsigned long ttl;
     short len;
@@ -144,10 +147,10 @@ typedef struct _dnsRecord {
 typedef struct _dnsPacket {
     unsigned short id;
     unsigned short u;
-    short qdcount;
-    short ancount;
-    short nscount;
-    short arcount;
+    uint16_t qdcount;
+    uint16_t ancount;
+    uint16_t nscount;
+    uint16_t arcount;
     dnsName *nmlist;
     dnsRecord *qdlist;
     dnsRecord *anlist;
@@ -163,13 +166,13 @@ typedef struct _dnsPacket {
 } dnsPacket;
 
 extern int dnsDebug;
-extern int dnsFlags;
-extern int dnsTTL;
+extern unsigned int dnsFlags;
+extern unsigned long dnsTTL;
 
-int dnsType(char *type);
+dnsType_t dnsType(char *type);
 const char *dnsTypeStr(int type);
 void dnsRecordDump(Ns_DString *ds,dnsRecord *y);
-void dnsRecordLog(dnsRecord *rec,int level,char *text, ...);
+void dnsRecordLog(dnsRecord *rec, int level, const char *text, ...);
 void dnsRecordFree(dnsRecord *pkt);
 void dnsRecordDestroy(dnsRecord **pkt);
 int dnsRecordSearch(dnsRecord *list,dnsRecord *rec,int replace);
@@ -179,24 +182,24 @@ dnsRecord *dnsRecordCreateAAAA(const char *name, const char *ipaddr);
 dnsRecord *dnsRecordCreateNS(char *name,char *data);
 dnsRecord *dnsRecordCreateCNAME(char *name,char *data);
 dnsRecord *dnsRecordCreatePTR(char *name,char *data);
-dnsRecord *dnsRecordCreateMX(char *name,int preference,char *data);
+dnsRecord *dnsRecordCreateMX(char *name, unsigned short preference,char *data);
 dnsRecord *dnsRecordCreateSOA(char *name,char *mname,char *rname,
                               unsigned long serial,unsigned long refresh,
                               unsigned long retry,unsigned long expire,unsigned long ttl);
-dnsRecord *dnsRecordCreateNAPTR(char *name,int order,int preference,char *flags,
+dnsRecord *dnsRecordCreateNAPTR(char *name, short order, short preference,char *flags,
                                 char *service,char *regexp,char *replace);
 Tcl_Obj *dnsRecordCreateTclObj(Tcl_Interp *interp,dnsRecord *drec);
 void dnsRecordUpdate(dnsRecord *rec);
 dnsRecord *dnsRecordAppend(dnsRecord **list,dnsRecord *pkt);
 dnsRecord *dnsRecordInsert(dnsRecord **list,dnsRecord *pkt);
 dnsRecord *dnsRecordRemove(dnsRecord **list,dnsRecord *link);
-dnsPacket *dnsParseHeader(void *packet,int size);
+dnsPacket *dnsParseHeader(void *packet, size_t size);
 dnsRecord *dnsParseRecord(dnsPacket *pkt,int query);
-dnsPacket *dnsParsePacket(unsigned char *packet,int size);
-int dnsParseName(dnsPacket *pkt,char **ptr,char *buf,int len,int pos,int level);
+dnsPacket *dnsParsePacket(unsigned char *packet, size_t size);
+short dnsParseName(dnsPacket *pkt,char **ptr,char *buf,int len, short pos, int level);
 int dnsParseString(dnsPacket *pkt,char **buf);
 void dnsEncodeName(dnsPacket *pkt,char *name,int compress);
-void dnsEncodeGrow(dnsPacket *pkt,unsigned int size,char *proc);
+void dnsEncodeGrow(dnsPacket *pkt, size_t size, const char *proc);
 void dnsEncodeHeader(dnsPacket *pkt);
 void dnsEncodePtr(dnsPacket *pkt,int offset);
 void dnsEncodeShort(dnsPacket *pkt,int num);
@@ -209,11 +212,11 @@ void dnsEncodeEnd(dnsPacket *pkt);
 void dnsEncodeRecord(dnsPacket *pkt,dnsRecord *list);
 void dnsEncodePacket(dnsPacket *pkt);
 dnsPacket *dnsPacketCreateReply(dnsPacket *req);
-dnsPacket *dnsPacketCreateQuery(char *name,int type);
-void dnsPacketLog(dnsPacket *pkt, int level,char *text, ...);
-void dnsPacketFree(dnsPacket *pkt,int type);
-int dnsPacketAddRecord(dnsPacket *pkt,dnsRecord **list,short *count,dnsRecord *rec);
-int dnsPacketInsertRecord(dnsPacket * pkt, dnsRecord ** list, short *count, dnsRecord * rec);
-void dnsInit(char *name,...);
-dnsPacket *dnsResolve(char *name,int type,char *server,int timeout,int retries);
-dnsPacket *dnsLookup(char *name,int type,int *errcode);
+dnsPacket *dnsPacketCreateQuery(char *name, dnsType_t type);
+void dnsPacketLog(dnsPacket *pkt, int level,const char *text, ...);
+void dnsPacketFree(dnsPacket *pkt, dnsType_t type);
+int dnsPacketAddRecord(dnsPacket *pkt,dnsRecord **list, uint16_t *count, dnsRecord *rec);
+int dnsPacketInsertRecord(dnsPacket * pkt, dnsRecord ** list, uint16_t *count, dnsRecord *rec);
+void dnsInit(const char *name,...);
+dnsPacket *dnsResolve(char *name, dnsType_t type, const char *server, int timeout, int retries);
+dnsPacket *dnsLookup(char *name, dnsType_t type, int *errcode);

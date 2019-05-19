@@ -527,7 +527,7 @@ dnsRecord *dnsRecordCreate(dnsRecord *from)
         case DNS_TYPE_OPT: /* fall through */
         case DNS_TYPE_ANY: /* fall through */
             /*
-             * TODO: check, if any of these types shoud do something here
+             * TODO: check, if any of these types should do something here
              */
             break;
         }

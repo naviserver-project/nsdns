@@ -785,7 +785,7 @@ static void DnsQueueRequestThread(void *arg)
     queue = (dnsQueue *) arg;
     sprintf(buf, "nsdns:queue:%d", queue->id);
     Ns_Log(Notice, "Starting thread: %s", buf);
-    Ns_ThreadSetName(buf);
+    Ns_ThreadSetName("%s", buf);
 
     Ns_MutexInit(&queue->lock);
     Ns_MutexSetName(&queue->lock, buf);

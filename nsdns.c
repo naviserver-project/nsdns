@@ -119,10 +119,10 @@ static Tcl_HashTable dnsClientList;
 static dnsClient dnsClientDflt;
 static Ns_LogSeverity DnsdDebug;    /* Severity at which to log verbose debugging. */
 
-Ns_ModuleInitProc Ns_ModuleInit;
-Ns_TclInterpInitProc DnsInterpInit;
-
 NS_EXPORT int Ns_ModuleVersion = 1;
+NS_EXPORT Ns_ModuleInitProc Ns_ModuleInit;
+
+Ns_TclInterpInitProc DnsInterpInit;
 
 NS_EXPORT int Ns_ModuleInit(const char *server, const char *module)
 {

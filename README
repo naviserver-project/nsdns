@@ -41,7 +41,7 @@ ns_param	defaulthost	""
 ns_param        debug           0
 
 - port - local UDP/TCP ports to listen
-- address - local addres to bind
+- address - local address to bind
 - ttl - default ttl for the records
 - cachettl - TTL to be used for cached records
 - nagativettl - TTL to be used for negative responses

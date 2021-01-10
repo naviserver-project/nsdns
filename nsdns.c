@@ -89,7 +89,7 @@ static void DnsQueueRequestThread(void *arg);
 static dnsClient *DnsClientFind(char *host, struct sockaddr *saPtr);
 static dnsClient *DnsClientCreate(char *host);
 static void DnsClientLink(char *host, char *host2);
-static int DnsClientResolve(char *host, struct sockaddr *saPtr);
+static int DnsClientResolve(const char *host, struct sockaddr *saPtr);
 
 static unsigned short dnsID = 0u;
 static int dnsPort;
@@ -385,6 +385,7 @@ static int DnsCmd(ClientData UNUSED(arg), Tcl_Interp *interp, int objc, Tcl_Obj 
         }
         argc--;
         argp++;
+        NS_FALL_THROUGH; /* fall through */
 
     case cmdAdd:
         if (argc < 5) {
@@ -479,6 +480,7 @@ static int DnsCmd(ClientData UNUSED(arg), Tcl_Interp *interp, int objc, Tcl_Obj 
         }
         argc--;
         argp++;
+        NS_FALL_THROUGH; /* fall through */
 
     case cmdDel:
         if (argc < 4) {
@@ -525,6 +527,7 @@ static int DnsCmd(ClientData UNUSED(arg), Tcl_Interp *interp, int objc, Tcl_Obj 
         }
         argc--;
         argp++;
+        NS_FALL_THROUGH; /* fall through */
 
     case cmdFind:
         if (argc < 3) {
@@ -903,6 +906,8 @@ static void DnsTcpThread(void *sock)
         break;
     case 0:
         dnsRequestSend(req);
+        NS_FALL_THROUGH; /* fall through */
+
     default:
         dnsRequestFree(req);
     }
@@ -1306,19 +1311,20 @@ static int dnsRequestFind(dnsRequest *req, dnsRecord *qlist)
                         dnsPacketAddRecord(req->reply, &req->reply->anlist, &req->reply->ancount, ncache);
                         break;
                     }
+                    NS_FALL_THROUGH; /* fall through */
 
-                case DNS_TYPE_A:     /* fall through */
-                case DNS_TYPE_SOA:   /* fall through */
-                case DNS_TYPE_WKS:   /* fall through */
-                case DNS_TYPE_PTR:   /* fall through */
-                case DNS_TYPE_HINFO: /* fall through */
-                case DNS_TYPE_MINFO: /* fall through */
-                case DNS_TYPE_MX:    /* fall through */
-                case DNS_TYPE_TXT:   /* fall through */
-                case DNS_TYPE_AAAA:  /* fall through */
-                case DNS_TYPE_SRV:   /* fall through */
-                case DNS_TYPE_OPT:   /* fall through */
-                case DNS_TYPE_ANY:   /* fall through */
+                case DNS_TYPE_A:     NS_FALL_THROUGH; /* fall through */
+                case DNS_TYPE_SOA:   NS_FALL_THROUGH; /* fall through */
+                case DNS_TYPE_WKS:   NS_FALL_THROUGH; /* fall through */
+                case DNS_TYPE_PTR:   NS_FALL_THROUGH; /* fall through */
+                case DNS_TYPE_HINFO: NS_FALL_THROUGH; /* fall through */
+                case DNS_TYPE_MINFO: NS_FALL_THROUGH; /* fall through */
+                case DNS_TYPE_MX:    NS_FALL_THROUGH; /* fall through */
+                case DNS_TYPE_TXT:   NS_FALL_THROUGH; /* fall through */
+                case DNS_TYPE_AAAA:  NS_FALL_THROUGH; /* fall through */
+                case DNS_TYPE_SRV:   NS_FALL_THROUGH; /* fall through */
+                case DNS_TYPE_OPT:   NS_FALL_THROUGH; /* fall through */
+                case DNS_TYPE_ANY:   NS_FALL_THROUGH; /* fall through */
                 default:
                     /* Exact match */
                     dnsPacketAddRecord(req->reply, &req->reply->anlist, &req->reply->ancount, dnsRecordCreate(qcache));
@@ -1547,7 +1553,7 @@ static void DnsClientLink(char *host, char *host2)
     }
 }
 
-static int DnsClientResolve(char *host, struct sockaddr *saPtr)
+static int DnsClientResolve(const char *host, struct sockaddr *saPtr)
 {
     if (host == NULL) {
         host = Ns_InfoHostname();

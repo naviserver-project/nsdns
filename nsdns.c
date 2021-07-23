@@ -124,7 +124,7 @@ NS_EXPORT Ns_ModuleInitProc Ns_ModuleInit;
 
 Ns_TclInterpInitProc DnsInterpInit;
 
-NS_EXPORT int Ns_ModuleInit(const char *server, const char *module)
+NS_EXPORT Ns_ReturnCode Ns_ModuleInit(const char *server, const char *module)
 {
     const char *path, *address;
     int         intValue;
@@ -264,7 +264,7 @@ NS_EXPORT int Ns_ModuleInit(const char *server, const char *module)
 /*
  * Add ns_dns commands to interp.
  */
-static int DnsInterpInit(Tcl_Interp *interp, const void *UNUSED(arg))
+static Ns_ReturnCode DnsInterpInit(Tcl_Interp *interp, const void *UNUSED(arg))
 {
     Tcl_CreateObjCommand(interp, "ns_dns", DnsCmd, NULL, NULL);
     return NS_OK;

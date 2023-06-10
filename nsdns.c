@@ -114,7 +114,7 @@ static dnsRequest *dnsProxyQueue = NULL;
 static struct NS_SOCKADDR_STORAGE dnsProxyAddr;
 static struct sockaddr *dnsProxyAddrPtr = (struct sockaddr *)&dnsProxyAddr;
 static dnsQueue dnsQueues[DNS_QUEUE_SIZE];
-static Ns_RWLock dnsClientLock;
+static Ns_RWLock dnsClientLock = NULL;
 static Tcl_HashTable dnsClientList;
 static dnsClient dnsClientDflt;
 static Ns_LogSeverity DnsdDebug;    /* Severity at which to log verbose debugging. */

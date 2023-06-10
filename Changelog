@@ -1,83 +1,482 @@
-2007-03-30 Vlad Seryakov vlad@crystalballinc.com
+commit df8991e934e7b7eec40ace03e841060e83d36c84
+Author: Gustaf Neumann <neumann@wu-wien.ac.at>
+Date:   2021-07-23
 
-	* improved CNAME recursive lookups
-        * added new config command
+    Modernize code
 
-2007-03-29 Vlad Seryakov vlad@crystalballinc.com
+M	nsdns.c
 
-        * added cachettl for cached records
+commit f044ece1da92303f90cf287a73c00efcf4450da4
+Author: Gustaf Neumann <neumann@wu-wien.ac.at>
+Date:   2021-01-10
 
-2006-05-28 Vlad Seryakov vlad@crystalballinc.com
+    Improved cleanness of compilation
 
-	* fixed segv in DNS receive code
+M	README
+M	nsdns.c
 
-2006-01-17 Vlad Seryakov vlad@crystalballinc.com
+commit ffa70b817cc38798795d933dc4cd0ec15e73afad
+Author: Gustaf Neumann <neumann@wu-wien.ac.at>
+Date:   2020-10-01
 
-	* fixed segv in caching routine, changes logging level
+    added NS_EXPORT to Ns_ModuleInit
 
-2005-08-01 Vlad Seryakov vlad@crystalballinc.com
+M	nsdns.c
 
-	* removed all compat functions
+commit 7f37f3363b39acf58a6f37be846291cbc7388102
+Author: Gustaf Neumann <neumann@wu-wien.ac.at>
+Date:   2019-05-19
 
-2005-06-26 Vlad Seryakov vlad@crystalballinc.com
+    improve cleanness of compilation
 
-	* updated packet parsing to work on Sparc
+M	dns.c
+M	nsdns.c
 
-2005-06-22 Vlad Seryakov vlad@crystalballinc.com
+commit 221ec56f9c5e8a8b63a7ba9d2daf7b9d634cb8b0
+Author: Gustaf Neumann <neumann@wu-wien.ac.at>
+Date:   2018-05-04
 
-	* statistics and NAPTR searching
+    Compile cleanly against thre most recent versions of Tcl and NaviServer.
+    Use more precise types.
+    Prefer enumation values.
 
-2005-06-20 Vlad Seryakov vlad@crystalballinc.com
+M	dns.c
+M	dns.h
+M	nsdns.c
 
-	* re-strcutured for multiple clients
+commit ba313e0f1f513ab6139582a7553ae54b1c8aa7ea
+Author: Gustaf Neumann <neumann@wu-wien.ac.at>
+Date:   2016-12-30
 
-2005-06-16 Vlad Seryakov vlad@crystalballinc.com
+    - adjust to interface changes
 
-	* NAPTR record support
+M	nsdns.c
 
-2005-06-13 Vlad Seryakov vlad@crystalballinc.com
+commit 4455b3a943cf6adaa4d6ec325e74554c56c0b36d
+Author: Gustaf Neumann <neumann@wu-wien.ac.at>
+Date:   2016-04-25
 
-	* restructured for more performance of udp requests
+    - add IPv6 support to nsdnsd
 
-2004-03-23 Vlad Seryakov vlad@crystalballinc.com
+M	README
+M	dns.c
+M	dns.h
+M	nsdns.c
 
-	* full name compression implemented
+commit 1137f75b114f1e359c74eb5500f9ac7ad3ecaeaf
+Author: Gustaf Neumann <neumann@wu-wien.ac.at>
+Date:   2016-01-11
 
-2004-03-22 Vlad Seryakov vlad@crystalballinc.com
+    - Removed NULL after the last typed argument to a variadic function
+    - Reduced variable scopes
+    - initialize variable
+    - fix print format
 
-	* dnsResolved FD_ISSET bug fixed
+M	dns.c
+M	nsdns.c
 
-2003-11-18 Vlad Seryakov vlad@crystalballinc.com
+commit 3bb6da565d56ebd9015f2c14e8fecce27613ad79
+Author: Gustaf Neumann <neumann@wu-wien.ac.at>
+Date:   2015-02-21
 
-	* default host and wildcards for domains added
+    - modernize code
 
-2003-06-13 Vlad Seryakov vlad@crystalballinc.com
+M	Makefile
+M	nsdns.c
 
-	* another caching bug fixed
+commit cff9fbffd4b5a6a62d287e318438cb9e000489f1
+Author: Gustaf Neumann <neumann@wu-wien.ac.at>
+Date:   2014-11-01
 
-2003-05-29 Vlad Seryakov vlad@crystalballinc.com
+    - adjust to tip
 
-	* caching bug fixed
+M	dns.c
+M	dns.h
+M	nsdns.c
 
-2003-05-28 Vlad Seryakov vlad@crystalballinc.com
+commit c78aaa8ad9a9540f0726d6115d042ad4149582d9
+Author: Gustaf Neumann <neumann@wu-wien.ac.at>
+Date:   2014-10-29
 
-	* added round-robin rotation for multiple RRs
+    - adjust to recent version of naviserver
 
-2003-05-16 Vlad Seryakov vlad@crystalballinc.com
+M	nsdns.c
 
-	* another memory overflow fixed
+commit 8218468ede6332058851cad598cdb54a2e5b8650
+Author: Gustaf Neumann <neumann@wu-wien.ac.at>
+Date:   2014-09-29
 
-2003-04-20 Vlad Seryakov vlad@crystalballinc.com
+    - align types
+    - cleanup some more compiler warnings
 
-        * Aolserver 4 support.
+M	nsdns.c
 
-2003-03-14 Vlad Seryakov vlad@crystalballinc.com
+commit 576b98e811707be7fca3021d04620b1b841b01cf
+Author: Gustaf Neumann <neumann@wu-wien.ac.at>
+Date:   2014-09-23
 
-	* nasty bug with dynamic buffer reallocation caused
-          DNS packets corruption
+    - make flags unsigned int
 
-2003-03-06 Vlad Seryakov vlad@crystalballinc.com
+M	nsdns.c
 
-	* changed debugging output, added negative cache
-	* fixed bug with SOA records
-	* dns.tcl module added which loads /etc/hosts file
+commit 5f2a1bd4fea484d08dcf396219f1f8a4b7a6926a
+Author: Gustaf Neumann <neumann@wu-wien.ac.at>
+Date:   2014-05-03
+
+    Improve prortability by using C-style comments; remove warnings from clang
+
+M	dns.c
+M	dns.h
+M	nsdns.c
+
+commit db3a9aec2c7ad08b347fe4fadd203dcf8257baf7
+Author: Gustaf Neumann <neumann@wu-wien.ac.at>
+Date:   2014-05-03
+
+    Follow formatting convention in other ns modules more closely
+
+M	dns.c
+M	nsdns.c
+
+commit 7eb774ac46939e5a440a2f5e8bf9e54cf068e3dc
+Author: Gustaf Neumann <neumann@wu-wien.ac.at>
+Date:   2014-05-02
+
+    - removed CVS variable, added contributes
+
+M	LICENSE
+
+commit e0943ec5baa44340fdccbc84fb1405250a82842a
+Author: Gustaf Neumann <neumann@wu-wien.ac.at>
+Date:   2014-05-02
+
+    - fixed nsdns to work with DiG 9.9.5 (which send an empt DNS OPT
+      record, see http://tools.ietf.org/html/rfc6891#section-6)
+    - recompile, when .h file is changed
+    - fix compiler warnings
+    - bump version number to 0.7.8
+
+M	Makefile
+M	README
+M	dns.c
+M	dns.h
+M	nsdns.c
+
+commit 070ebd7851cd9039040220cee74c10eee7112500
+Author: Vlad Seryakov <vlad@crystalballinc.com>
+Date:   2007-03-30
+
+    Fix correct order in CNAME replies
+
+M	dns.c
+M	dns.h
+M	nsdns.c
+
+commit ef943ae567e290cf650e8c66dc5ca826c8526c73
+Author: Vlad Seryakov <vlad@crystalballinc.com>
+Date:   2007-03-30
+
+    Improve CNAME recursive lookups; add new config command
+
+M	dns.c
+M	dns.h
+M	nsdns.c
+
+commit 6f3d587115452242b6ea9cc3edcf23ef1552c10c
+Author: Vlad Seryakov <vlad@crystalballinc.com>
+Date:   2007-03-29
+
+    Add new cachettl; code updates
+
+M	README
+M	nsdns.c
+
+commit 0b90d3e3ea7f821041b60e2d3afb0c7bd5d7054e
+Author: Vlad Seryakov <vlad@crystalballinc.com>
+Date:   2006-12-05
+
+    Minor change to make installation work and smoothed some edges
+
+M	dns_procs.tcl
+
+commit 7f3685484dd692695eff3d5e78c5337459c1aa0a
+Author: Vlad Seryakov <vlad@crystalballinc.com>
+Date:   2006-06-29
+
+    Cleanup and re-arrange stuff around, common proc names, etc...
+
+M	nsdns.c
+
+commit 143e0424ad03d810913db2383a3dcf6415d78bd4
+Author: Vlad Seryakov <vlad@crystalballinc.com>
+Date:   2006-06-16
+
+    Run sources through indent
+
+M	dns.c
+M	nsdns.c
+
+commit e991a512cafa111ec129ab74fec204ffcdb1b096
+Author: Vlad Seryakov <vlad@crystalballinc.com>
+Date:   2006-06-14
+
+    Fix order of Makefile directives
+
+M	Makefile
+
+commit bb581f76770edae6c7ecd1b18455d4654ca40622
+Author: Vlad Seryakov <vlad@crystalballinc.com>
+Date:   2006-05-29
+
+    Fix SEGV in DNS receive code
+
+M	nsdns.c
+
+commit 062b86cd6b9a9f4ce5c7b456813c4693990a03a8
+Author: Vlad Seryakov <vlad@crystalballinc.com>
+Date:   2006-04-05
+
+    Install correct tcl files
+
+M	Makefile
+
+commit ea4d590be854e8767c3197d938b9cb24655cb766
+Author: Vlad Seryakov <vlad@crystalballinc.com>
+Date:   2006-03-18
+
+    Fix build to install tcl files
+
+M	Makefile
+
+commit bb46d29bd44d1f1739587eaee3dfdd5e300be0bc
+Author: Vlad Seryakov <vlad@crystalballinc.com>
+Date:   2006-01-24
+
+    Use new Ns_Sock timeout API
+
+M	nsdns.c
+
+commit 048c4acddd24dbf71cac357e6bd7e9399f6424ba
+Author: Vlad Seryakov <vlad@crystalballinc.com>
+Date:   2006-01-18
+
+    Fix SEGV in caching routine; log at Notive level, not Error
+
+M	dns.c
+M	dns.h
+M	dns_procs.tcl
+M	nsdns.c
+
+commit ed53c9658ef5011627f1a842616fd0ad8b3341b6
+Author: Vlad Seryakov <vlad@crystalballinc.com>
+Date:   2006-01-17
+
+    Only log if on debug mode
+
+M	nsdns.c
+
+commit b5570246ae3039a3b4dc813705c8d11c665d4d7b
+Author: Vlad Seryakov <vlad@crystalballinc.com>
+Date:   2005-11-03
+
+    Remove binder support
+
+M	nsdns.c
+
+commit b2330c1e56573d6febfe263a4f0e4e886610e801
+Author: Vlad Seryakov <vlad@crystalballinc.com>
+Date:   2005-11-02
+
+    Support the socket pre-binder
+
+M	nsdns.c
+
+commit ad7d521dca1887758d1483c9defa9ae4ab3c2184
+Author: Vlad Seryakov <vlad@crystalballinc.com>
+Date:   2005-08-01
+
+    Don't use older naviserver compat routines
+
+M	nsdns.c
+
+commit e17c420a20a1fdea61c80ec9734e8035555020ae
+Author: Vlad Seryakov <vlad@crystalballinc.com>
+Date:   2005-06-27
+
+    Fix packet parsing to work on Sparc
+
+M	dns.c
+
+commit 5fa82a14b406178e58a22467e92285727f0a06dc
+Author: Vlad Seryakov <vlad@crystalballinc.com>
+Date:   2005-06-24
+
+    Typo: fix NAPTR record creation
+
+M	dns.c
+
+commit 4165db632ec37f24f38ecf04f3ef6ea81b0021c0
+Author: Vlad Seryakov <vlad@crystalballinc.com>
+Date:   2005-06-24
+
+    Support NAPTR wildcard regexps
+
+M	dns.c
+M	dns.h
+M	nsdns.c
+
+commit a107b513e9469fb6a75023ebaa9cd31422a03cd3
+Author: Vlad Seryakov <vlad@crystalballinc.com>
+Date:   2005-06-23
+
+    Add tcl stats command; handle NAPTR queries
+
+M	dns.c
+M	dns.h
+M	nsdns.c
+
+commit 9011f02a5869ce10c84e5f3f03642cf7941abc5a
+Author: Vlad Seryakov <vlad@crystalballinc.com>
+Date:   2005-06-21
+
+    USE_TCL8X for newer Tcl defs
+
+M	nsdns.c
+
+commit f48866de448c1440c1242a4c7f2ff1d35783278b
+Author: Vlad Seryakov <vlad@crystalballinc.com>
+Date:   2005-06-21
+
+    Track stats in tcp thread; fix condition wakeup in listen thread
+
+M	nsdns.c
+
+commit 1260c489ee4ba741c02c579caf1237f459d08fb8
+Author: Vlad Seryakov <vlad@crystalballinc.com>
+Date:   2005-06-21
+
+    Unknown change
+
+M	nsdns.c
+
+commit 019c5c8a8d78d9b5a3c7a9c8df062ca7688249ce
+Author: Vlad Seryakov <vlad@crystalballinc.com>
+Date:   2005-06-21
+
+    Add read/write stats
+
+M	nsdns.c
+
+commit 179a74eeab18494211b6c8646d8015c93d71b72a
+Author: Vlad Seryakov <vlad@crystalballinc.com>
+Date:   2005-06-21
+
+    Typo
+
+M	nsdns.c
+
+commit 370d804391d0207e56d83cfb34962dab2c38b0ae
+Author: Vlad Seryakov <vlad@crystalballinc.com>
+Date:   2005-06-21
+
+    Handle client linking
+
+M	nsdns.c
+
+commit fd68704c692532fc6a4dc732fe66e30b83818c63
+Author: Vlad Seryakov <vlad@crystalballinc.com>
+Date:   2005-06-21
+
+    Restructure for multiple clients
+
+M	dns.c
+M	dns.h
+M	nsdns.c
+
+commit a371f306b41169e880f888d47b9344d5184c34c2
+Author: Vlad Seryakov <vlad@crystalballinc.com>
+Date:   2005-06-18
+
+    Minor code cleanups
+
+M	README
+M	nsdns.c
+
+commit a7c97f9e037366fb8fedac64805437600023a3e5
+Author: Vlad Seryakov <vlad@crystalballinc.com>
+Date:   2005-06-17
+
+    Fixes for NAPTR string parsing
+
+M	dns.c
+M	dns.h
+
+commit 5c1ff81cd63dc6ea16d6f332487296be8391bf2f
+Author: Vlad Seryakov <vlad@crystalballinc.com>
+Date:   2005-06-17
+
+    Add and use encodeString utility routine
+
+M	dns.c
+M	dns.h
+
+commit a381f479d820c8c227dacbe6640581a144ffd0ca
+Author: Vlad Seryakov <vlad@crystalballinc.com>
+Date:   2005-06-17
+
+    Add NAPTR record support
+
+M	dns.c
+
+commit 733ae8f8d44c79d26c10df046a42b3c348af396e
+Author: Vlad Seryakov <vlad@crystalballinc.com>
+Date:   2005-06-14
+
+    Restructured for better performance of udp requests
+
+M	dns.c
+M	dns.h
+M	nsdns.c
+
+commit c5a0c2b49a8767521b35198cd6f7b92696764d72
+Author: Vlad Seryakov <vlad@crystalballinc.com>
+Date:   2005-06-13
+
+    Silence some more compiler warnings
+
+M	nsdns.c
+
+commit dd741171bbd1acf1caf6b42a6212a73dff4d9de2
+Author: Vlad Seryakov <vlad@crystalballinc.com>
+Date:   2005-06-12
+
+    Add NA support; silence some compiler warnings
+
+M	dns.c
+M	dns.h
+M	nsdns.c
+
+commit 61e0fdfca93a2400eb59dfeb25553c4ec4a935f4
+Author: Vlad Seryakov <vlad@crystalballinc.com>
+Date:   2005-06-08
+
+    Change license to Mozilla; change wording in README file
+
+A	LICENSE
+M	README
+M	dns.c
+M	dns.h
+M	nsdns.c
+
+commit 38ffb5abbe8d525941652278b3b5c8efc91ad59a
+Author: Vlad Seryakov <vlad@crystalballinc.com>
+Date:   2005-05-20
+
+    Initial revision
+
+A	Makefile
+A	README
+A	dns.c
+A	dns.h
+A	dns_procs.tcl
+A	nsdns.c

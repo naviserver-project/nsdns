@@ -20,6 +20,6 @@ proc dns_reload { hosts } {
     ns_log Notice nsdns: $hosts loaded, $count records
 }
 
-if { [info command ns_dns] != "" } {
+if { [info commands ns_dns] != "" } {
   dns_reload /etc/hosts
 }

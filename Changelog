@@ -1,3 +1,11 @@
+commit 1f7bd7527a1f710582f2f65cd8b776ee8710f11c
+Author: Gustaf Neumann <neumann@wu-wien.ac.at>
+Date:   2023-06-10
+
+    initialize global variables
+
+M	nsdns.c
+
 commit df8991e934e7b7eec40ace03e841060e83d36c84
 Author: Gustaf Neumann <neumann@wu-wien.ac.at>
 Date:   2021-07-23
@@ -36,9 +44,9 @@ commit 221ec56f9c5e8a8b63a7ba9d2daf7b9d634cb8b0
 Author: Gustaf Neumann <neumann@wu-wien.ac.at>
 Date:   2018-05-04
 
-    Compile cleanly against thre most recent versions of Tcl and NaviServer.
+    Compile cleanly against the most recent versions of Tcl and NaviServer.
     Use more precise types.
-    Prefer enumation values.
+    Prefer enumeration values.
 
 M	dns.c
 M	dns.h

@@ -310,7 +310,7 @@ dnsPacket *dnsResolve(char *name, dnsType_t type, const char *server, int timeou
     return 0;
 }
 
-void dnsRecordDump(Ns_DString *ds, dnsRecord *y)
+void dnsRecordDump(Tcl_DString *ds, dnsRecord *y)
 {
     char ipString[NS_IPADDR_SIZE];
 
@@ -384,7 +384,7 @@ void dnsRecordDump(Ns_DString *ds, dnsRecord *y)
 
 void dnsRecordLog(dnsRecord *rec, int level, const char *text, ...)
 {
-    Ns_DString ds;
+    Tcl_DString ds;
     va_list ap;
 
     if (level > dnsDebug) {
@@ -392,12 +392,12 @@ void dnsRecordLog(dnsRecord *rec, int level, const char *text, ...)
     }
     va_start(ap, text);
 
-    Ns_DStringInit(&ds);
-    Ns_DStringAppend(&ds, "nsdns: ");
+    Tcl_DStringInit(&ds);
+    Tcl_DStringAppend(&ds, "nsdns: ", TCL_INDEX_NONE);
     Ns_DStringVPrintf(&ds, text, ap);
     dnsRecordDump(&ds, rec);
     Ns_Log(level < 0 ? Error : Notice, "%s", ds.string);
-    Ns_DStringFree(&ds);
+    Tcl_DStringFree(&ds);
     va_end(ap);
 }
 
@@ -1488,7 +1488,7 @@ dnsPacket *dnsPacketCreateQuery(char *name, dnsType_t type)
 void dnsPacketLog(dnsPacket *pkt, int level, const char *text, ...)
 {
     dnsRecord *y;
-    Ns_DString ds;
+    Tcl_DString ds;
     va_list ap;
 
     if (level > dnsDebug) {
@@ -1496,7 +1496,7 @@ void dnsPacketLog(dnsPacket *pkt, int level, const char *text, ...)
     }
     va_start(ap, text);
 
-    Ns_DStringInit(&ds);
+    Tcl_DStringInit(&ds);
     Ns_DStringPrintf(&ds, "nsdns: ");
     Ns_DStringVPrintf(&ds, text, ap);
     Ns_DStringPrintf(&ds, " HEADER: [%04X] ID=%u, OP=%d, QR=%d, AA=%d, RD=%d, RA=%d, TC=%d, RCODE=%d, "
@@ -1523,7 +1523,7 @@ void dnsPacketLog(dnsPacket *pkt, int level, const char *text, ...)
     for (y = pkt->arlist; y; y = y->next)
         dnsRecordDump(&ds, y);
     Ns_Log(level < 0 ? Error : Notice, "%s", ds.string);
-    Ns_DStringFree(&ds);
+    Tcl_DStringFree(&ds);
 }
 
 void dnsPacketFree(dnsPacket *pkt, dnsType_t UNUSED(type))

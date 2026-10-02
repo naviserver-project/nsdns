@@ -747,10 +747,7 @@ dnsRecord *dnsRecordCreateMX(char *name, unsigned short preference, char *data)
     y->data.mx = ns_calloc(1, sizeof(dnsMX));
     y->data.mx->preference = preference;
     y->data.mx->name = ns_strcopy(data);
-    y->len = 2;
-    if (y->data.name != 0) {
-        y->len += strlen(y->data.name);
-    }
+    /* RDATA length is determined by dnsEncodeEnd() after encoding. */
     y->ttl = dnsTTL;
     return y;
 }
@@ -771,10 +768,7 @@ dnsRecord *dnsRecordCreateNAPTR(char *name, short order, short preference, char 
     y->data.naptr->service = ns_strcopy(service);
     y->data.naptr->regexp = ns_strcopy(regexp && *regexp ? regexp : 0);
     y->data.naptr->replace = ns_strcopy(replace && *replace ? replace : 0);
-    y->len = 2;
-    if (y->data.name != 0) {
-        y->len += strlen(y->data.name);
-    }
+    /* RDATA length is determined by dnsEncodeEnd() after encoding. */
     y->ttl = dnsTTL;
     return y;
 }
@@ -797,14 +791,7 @@ dnsRecord *dnsRecordCreateSOA(char *name, char *mname, char *rname,
     y->data.soa->retry = retry;
     y->data.soa->expire = expire;
     y->data.soa->ttl = (ttl != 0) ? ttl : dnsTTL;
-    y->len = 20;
-    if (y->data.soa->mname != 0) {
-        y->len += strlen(y->data.soa->mname);
-
-    }
-    if (y->data.soa->rname != 0) {
-        y->len += strlen(y->data.soa->rname);
-    }
+    /* RDATA length is determined by dnsEncodeEnd() after encoding. */
     y->ttl = dnsTTL;
     return y;
 }
@@ -1475,7 +1462,7 @@ void dnsEncodeShort(dnsPacket *pkt, int num)
 
 void dnsEncodeLong(dnsPacket *pkt, unsigned long num)
 {
-    uint32_t ul = htonl((unsigned long) num);
+    uint32_t ul = htonl((uint32_t)num);
     memcpy(pkt->buf.ptr, &ul, sizeof(ul));
     pkt->buf.ptr += 4;
 }
@@ -1507,7 +1494,7 @@ void dnsEncodeBegin(dnsPacket *pkt)
 
 void dnsEncodeEnd(dnsPacket *pkt)
 {
-    unsigned short us = htons(pkt->buf.ptr - pkt->buf.rec - 2);
+    uint16_t us = htons((uint16_t)(pkt->buf.ptr - pkt->buf.rec - 2));
     memcpy(pkt->buf.rec, &us, sizeof(us));
 }
 

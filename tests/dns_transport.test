@@ -23,6 +23,18 @@ foreach {type number value expected} {
     } -cleanup {ns_dns flush} -result $value
 }
 
+foreach {type arguments expected} {
+    MX {65535 mail.test 0} {mail.test 65535 0}
+    NAPTR {1 2 s SIP+D2U !pattern! sip.test 0} {1 2 s SIP+D2U !pattern! sip.test 0}
+} {
+    test dns-structured-1.$type {structured record constructors survive UDP encoding and parsing} -constraints {nsdns transport} -setup {
+        ns_dns flush
+        ns_dns add structured.test $type {*}$arguments
+    } -body {
+        lrange [lindex [::dnsTest::resolve structured.test $type] 0 0] 2 end
+    } -cleanup {ns_dns flush} -result $expected
+}
+
 test dns-cname-1.1 {CNAME retains AAAA query type} -constraints {nsdns transport connchan} -setup {
     ns_dns flush
     ns_dns add host.test AAAA 2001:db8::10 0

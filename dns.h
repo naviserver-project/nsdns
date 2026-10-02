@@ -79,13 +79,13 @@ typedef enum {
 #define DNS_GET_OPCODE(x)       (((x) & 0x7800) >> 11)
 #define DNS_GET_QR(x)           (((x) & 0x8000) >> 15)
 
-#define DNS_SET_RCODE(x,y)      ((x) = ((x) & ~0x000f) | ((y) & 0x000f))
-#define DNS_SET_RA(x,y)         ((x) = ((x) & ~0x0080) | (((y) << 7) & 0x0080))
-#define DNS_SET_RD(x,y)         ((x) = ((x) & ~0x0100) | (((y) << 8) & 0x0100))
-#define DNS_SET_TC(x,y)         ((x) = ((x) & ~0x0200) | (((y) << 9) & 0x0200))
-#define DNS_SET_AA(x,y)         ((x) = ((x) & ~0x0400) | (((y) << 10) & 0x0400))
-#define DNS_SET_OPCODE(x,y)     ((x) = ((x) & ~0x7800) | (((y) << 11) & 0x7800))
-#define DNS_SET_QR(x,y)         ((x) = ((x) & ~0x8000) | (((y) << 15) & 0x8000))
+#define DNS_SET_RCODE(x,y)      ((x) = (uint16_t)(((x) & 0xfff0u) | ((unsigned int)(y) & 0x000f)))
+#define DNS_SET_RA(x,y)         ((x) = (uint16_t)(((x) & 0xff7fu) | (((unsigned int)(y) << 7) & 0x0080)))
+#define DNS_SET_RD(x,y)         ((x) = (uint16_t)(((x) & 0xfeffu) | (((unsigned int)(y) << 8) & 0x0100)))
+#define DNS_SET_TC(x,y)         ((x) = (uint16_t)(((x) & 0xfdffu) | (((unsigned int)(y) << 9) & 0x0200)))
+#define DNS_SET_AA(x,y)         ((x) = (uint16_t)(((x) & 0xfbffu) | (((unsigned int)(y) << 10) & 0x0400)))
+#define DNS_SET_OPCODE(x,y)     ((x) = (uint16_t)(((x) & 0x87ffu) | (((unsigned int)(y) << 11) & 0x7800)))
+#define DNS_SET_QR(x,y)         ((x) = (uint16_t)(((x) & 0x7fffu) | (((unsigned int)(y) << 15) & 0x8000)))
 
 #define DNS_BUF_SIZE            65535
 #define DNS_REPLY_SIZE          514

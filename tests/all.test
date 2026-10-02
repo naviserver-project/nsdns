@@ -1,0 +1,21 @@
+# Run with nsd -c -d -t tests/test.nscfg tests/all.test ?tcltest options?
+package require tcltest 2.2
+namespace import ::tcltest::*
+configure -singleproc true -testdir [file dirname [info script]] -notfile all.test {*}$argv
+configure -notfile [lsort -unique [concat [configure -notfile] all.test]]
+source [file join [file dirname [info script]] support.tcl]
+proc ::tcltest::cleanupTestsHook {} {
+    variable numTests
+    upvar 2 testFileFailures crashed
+    set ::testExit [expr {$numTests(Failed) > 0}]
+    if {[info exists crashed]} {set ::testExit [expr {$::testExit || [llength $crashed] > 0}]}
+}
+set testExit 0
+try {
+    runAllTests
+} finally {
+    ::dnsTest::stopFixture
+}
+# Follow the NaviServer test runner convention for a failing exit status.
+if {$testExit} {ns_shutdown -restart} else {ns_shutdown}
+vwait forever

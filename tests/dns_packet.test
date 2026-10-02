@@ -1,0 +1,35 @@
+package require tcltest 2.2
+namespace import ::tcltest::*
+source [file join [file dirname [info script]] support.tcl]
+
+# Exercise the real parser with malformed frames through NaviServer sockets.
+test dns-packet-1.1 {every truncated question prefix is rejected} -constraints {nsdns transport connchan} -body {
+    set wire [::dnsTest::query host.test 16]
+    set rejected 1
+    for {set size 0} {$size < [string length $wire]} {incr size} {
+        if {[::dnsTest::tcpWire [string range $wire 0 [expr {$size-1}]] 1] ne ""} {set rejected 0}
+    }
+    set rejected
+} -result 1
+
+test dns-packet-1.2 {TXT string cannot extend past RDLENGTH} -constraints {nsdns transport connchan} -body {
+    set wire [::dnsTest::query host.test 16]
+    set wire [string replace $wire 6 7 [binary format S 1]]
+    append wire [binary format H* c00c] [binary format S* {16 1 0 60 2}] [binary format H* ff00]
+    ::dnsTest::tcpWire $wire 1
+} -result {}
+
+test dns-packet-1.3 {AAAA RDLENGTH must be exactly 16} -constraints {nsdns transport connchan} -body {
+    set wire [::dnsTest::query host.test 28]
+    set wire [string replace $wire 6 7 [binary format S 1]]
+    append wire [binary format H* c00c] [binary format S* {28 1 0 60 4}] [binary format H* 00000000]
+    ::dnsTest::tcpWire $wire 1
+} -result {}
+
+test dns-packet-1.4 {compression loop is rejected} -constraints {nsdns transport connchan} -body {
+    set wire [binary format S* {1234 256 1 0 0 0}]
+    append wire [binary format H* c00c00100001]
+    ::dnsTest::tcpWire $wire 1
+} -result {}
+
+cleanupTests

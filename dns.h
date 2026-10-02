@@ -23,7 +23,7 @@
  *
  */
 
-#define DNS_VERSION "0.8.0"
+#define DNS_VERSION "0.9.0"
 
 /* DNS flags */
 #define DNS_TCP                 0x0001u
@@ -76,7 +76,7 @@ typedef enum {
 #define DNS_GET_RD(x)           (((x) & 0x0100) >> 8)
 #define DNS_GET_TC(x)           (((x) & 0x0200) >> 9)
 #define DNS_GET_AA(x)           (((x) & 0x0400) >> 10)
-#define DNS_GET_OPCODE(x)       (((x) & 0xe800) >> 11)
+#define DNS_GET_OPCODE(x)       (((x) & 0x7800) >> 11)
 #define DNS_GET_QR(x)           (((x) & 0x8000) >> 15)
 
 #define DNS_SET_RCODE(x,y)      ((x) = ((x) & ~0x000f) | ((y) & 0x000f))
@@ -84,10 +84,10 @@ typedef enum {
 #define DNS_SET_RD(x,y)         ((x) = ((x) & ~0x0100) | (((y) << 8) & 0x0100))
 #define DNS_SET_TC(x,y)         ((x) = ((x) & ~0x0200) | (((y) << 9) & 0x0200))
 #define DNS_SET_AA(x,y)         ((x) = ((x) & ~0x0400) | (((y) << 10) & 0x0400))
-#define DNS_SET_OPCODE(x,y)     ((x) = ((x) & ~0xe800) | (((y) << 11) & 0xe800))
+#define DNS_SET_OPCODE(x,y)     ((x) = ((x) & ~0x7800) | (((y) << 11) & 0x7800))
 #define DNS_SET_QR(x,y)         ((x) = ((x) & ~0x8000) | (((y) << 15) & 0x8000))
 
-#define DNS_BUF_SIZE            2048
+#define DNS_BUF_SIZE            65535
 #define DNS_REPLY_SIZE          514
 #define DNS_QUEUE_SIZE          16
 
@@ -131,10 +131,10 @@ typedef struct _dnsRecord {
     dnsType_t type;
     unsigned short class;
     unsigned long ttl;
-    short len;
+    unsigned short len;
     union {
       char *name;
-      //struct in_addr ipaddr;
+      unsigned char *txt; /* TXT RDATA, including character-string lengths. */
       struct NS_SOCKADDR_STORAGE sa;
       dnsMX *mx;
       dnsNAPTR *naptr;
@@ -157,7 +157,7 @@ typedef struct _dnsPacket {
     dnsRecord *nslist;
     dnsRecord *arlist;
     struct {
-      unsigned short allocated;
+      size_t allocated;
       unsigned short size;
       char *rec;
       char *ptr;
@@ -169,16 +169,17 @@ extern int dnsDebug;
 extern unsigned int dnsFlags;
 extern unsigned long dnsTTL;
 
-dnsType_t dnsType(char *type);
-const char *dnsTypeStr(int type);
+dnsType_t dnsType(const char *type);
+const char *dnsTypeStr(dnsType_t type);
 void dnsRecordDump(Ns_DString *ds,dnsRecord *y);
-void dnsRecordLog(dnsRecord *rec, int level, const char *text, ...);
+void dnsRecordLog(dnsRecord *rec, int level, const char *text, ...) NS_GNUC_PRINTF(3,4);
 void dnsRecordFree(dnsRecord *pkt);
 void dnsRecordDestroy(dnsRecord **pkt);
 int dnsRecordSearch(dnsRecord *list,dnsRecord *rec,int replace);
 dnsRecord *dnsRecordCreate(dnsRecord *from);
 dnsRecord *dnsRecordCreateA(const char *name, const char *ipaddr);
 dnsRecord *dnsRecordCreateAAAA(const char *name, const char *ipaddr);
+dnsRecord *dnsRecordCreateTXT(Tcl_Interp *interp, const char *name, Tcl_Obj *strings);
 dnsRecord *dnsRecordCreateNS(char *name,char *data);
 dnsRecord *dnsRecordCreateCNAME(char *name,char *data);
 dnsRecord *dnsRecordCreatePTR(char *name,char *data);
@@ -211,12 +212,15 @@ void dnsEncodeBegin(dnsPacket *pkt);
 void dnsEncodeEnd(dnsPacket *pkt);
 void dnsEncodeRecord(dnsPacket *pkt,dnsRecord *list);
 void dnsEncodePacket(dnsPacket *pkt);
+void dnsEncodePacketLimit(dnsPacket *pkt, size_t limit);
 dnsPacket *dnsPacketCreateReply(dnsPacket *req);
-dnsPacket *dnsPacketCreateQuery(char *name, dnsType_t type);
-void dnsPacketLog(dnsPacket *pkt, int level,const char *text, ...);
+dnsPacket *dnsPacketCreateQuery(const char *name, dnsType_t type);
+void dnsPacketLog(dnsPacket *pkt, int level,const char *text, ...) NS_GNUC_PRINTF(3,4);
 void dnsPacketFree(dnsPacket *pkt, dnsType_t type);
 int dnsPacketAddRecord(dnsPacket *pkt,dnsRecord **list, uint16_t *count, dnsRecord *rec);
 int dnsPacketInsertRecord(dnsPacket * pkt, dnsRecord ** list, uint16_t *count, dnsRecord *rec);
 void dnsInit(const char *name,...);
+dnsPacket *dnsResolveTcp(dnsPacket *req, const char *server, unsigned short port, int timeout);
+dnsPacket *dnsResolveAt(char *name, dnsType_t type, const char *server, unsigned short port, int timeout, int retries);
 dnsPacket *dnsResolve(char *name, dnsType_t type, const char *server, int timeout, int retries);
 dnsPacket *dnsLookup(char *name, dnsType_t type, int *errcode);

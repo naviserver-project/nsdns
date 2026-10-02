@@ -1,0 +1,64 @@
+# Isolated configuration shared by the tcltest runner and its upstream fixture.
+set root [file dirname [file dirname [file normalize [ns_info config]]]]
+set family [expr {[info exists ::env(NSDNS_TEST_FAMILY)] ? $::env(NSDNS_TEST_FAMILY) : 4}]
+set host [expr {$family == 6 ? "::1" : "127.0.0.1"}]
+set enabled 1
+proc testPort {host} {
+    set listener [ns_socklisten $host 0]
+    try {return [lindex [fconfigure $listener -sockname] 2]} finally {close $listener}
+}
+if {[catch {testPort $host} port]} {
+    if {$family != 6} {error $port}
+    set enabled 0
+    set port 0
+}
+set upstream [expr {$enabled ? [testPort $host] : 0}]
+set fixture [info exists ::env(NSDNS_TEST_FIXTURE_PORT)]
+if {$fixture} {set port $::env(NSDNS_TEST_FIXTURE_PORT)}
+set naviserver [file dirname [file dirname [info nameofexecutable]]]
+set temp [file tempfile tempPath nsdns-tests-]
+close $temp
+set home [file dirname $tempPath]
+file delete $tempPath
+# Use a dedicated home without touching the installed server's files.
+set home [file join $home nsdns-tests-[pid]]
+set connchan [file exists $naviserver/bin/nssock.so]
+file mkdir $home
+ns_section ns/parameters {
+    ns_param home $home
+    ns_param logdir $home
+    ns_param pidfile $home/nsd.pid
+    ns_param tcllibrary $naviserver/tcl
+}
+ns_section test {
+    ns_param host $host
+    ns_param port $port
+    ns_param upstreamport $upstream
+    ns_param transport $enabled
+    ns_param family $family
+    ns_param connchan $connchan
+}
+ns_section ns/servers {ns_param test test}
+ns_section ns/server/test/tcl {ns_param initfile $naviserver/bin/init.tcl}
+ns_section ns/server/test/modules {ns_param nsdns $root/nsdns.so}
+ns_section ns/server/test/module/nsdns {
+    ns_param address $host
+    ns_param port $port
+    ns_param nameserver $host
+    ns_param nameserverport $upstream
+    if {!$fixture && $enabled} {
+        ns_param proxyhost $host
+        ns_param proxyport $upstream
+    }
+}
+
+# ns_connchan connect uses the plain socket driver, without an HTTP listener.
+if {$connchan} {
+    ns_section ns/modules {ns_param nssock $naviserver/bin/nssock.so}
+    ns_section ns/module/nssock {
+        ns_param port 0
+        ns_param defaultserver test
+        ns_param recvwait 3s
+        ns_param sendwait 3s
+    }
+}

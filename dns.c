@@ -1,33 +1,26 @@
 /*
- * The contents of this file are subject to the Mozilla Public License
- * Version 1.1(the "License"); you may not use this file except in
- * compliance with the License. You may obtain a copy of the License at
- * http://www.mozilla.org/.
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  *
- * Software distributed under the License is distributed on an "AS IS"
- * basis,WITHOUT WARRANTY OF ANY KIND,either express or implied. See
- * the License for the specific language governing rights and limitations
- * under the License.
- *
- * Alternatively,the contents of this file may be used under the terms
- * of the GNU General Public License(the "GPL"),in which case the
- * provisions of GPL are applicable instead of those above.  If you wish
- * to allow use of your version of this file only under the terms of the
- * GPL and not to allow others to use your version of this file under the
- * License,indicate your decision by deleting the provisions above and
- * replace them with the notice and other provisions required by the GPL.
- * If you do not delete the provisions above,a recipient may use your
- * version of this file under either the License or the GPL.
- *
- * Author Vlad Seryakov vlad@crystalballinc.com
+ * The Initial Developer of the Original Code and related documentation
+ * is America Online, Inc. Portions created by AOL are Copyright (C) 1999
+ * America Online, Inc. All Rights Reserved.
  *
  */
 
+/*
+ *   NaviServer DNS support - module file
+ *
+ *   Author Vlad Seryakov vlad@crystalballinc.com
+ *   Gustaf Neumann neumann@wu.ac.at
+ *
+ */
 #define USE_TCL8X
 #include "ns.h"
 #include "dns.h"
 
-#define DNS_BUFSIZE 536
+#define DNS_BUFSIZE 65535
 
 typedef struct _dnsServer {
     struct _dnsServer *next;
@@ -44,6 +37,7 @@ unsigned int dnsFlags = 0u;
 static Ns_Mutex dnsMutex;
 static dnsServer *dnsServers = 0;
 static int dnsResolverRetries = 3;
+static unsigned short dnsResolverPort = 53;
 static int dnsResolverTimeout = 5;
 static unsigned long dnsFailureTimeout = 300u;
 
@@ -54,6 +48,7 @@ static struct {
    { "ANY",   DNS_TYPE_ANY },
    { "A",     DNS_TYPE_A },
    { "AAAA",  DNS_TYPE_AAAA },
+   { "TXT",   DNS_TYPE_TXT },
    { "NS",    DNS_TYPE_NS },
    { "CNAME", DNS_TYPE_CNAME },
    { "SOA",   DNS_TYPE_SOA },
@@ -98,7 +93,10 @@ void dnsInit(const char *name, ...)
      if (!strcmp(name, "debug")) {
         dnsDebug = va_arg(ap, int);
     } else
-     if (!strcmp(name, "retry")) {
+     if (!strcmp(name, "port")) {
+        dnsResolverPort = (unsigned short)va_arg(ap, int);
+    } else
+    if (!strcmp(name, "retry")) {
         dnsResolverRetries = va_arg(ap, int);
     } else
      if (!strcmp(name, "timeout")) {
@@ -114,14 +112,57 @@ void dnsInit(const char *name, ...)
     Ns_MutexUnlock(&dnsMutex);
 }
 
+/* DNS over TCP uses a two-byte length prefix and permits partial I/O. */
+static bool dnsTcpTransfer(NS_SOCKET sock, char *data, size_t length,
+                           const Ns_Time *timeout, bool writeData)
+{
+    while (length > 0) {
+        ssize_t count = writeData ? Ns_SockSend(sock, data, length, timeout)
+                                 : Ns_SockRecv(sock, data, length, timeout);
+        if (count <= 0) return NS_FALSE;
+        data += count;
+        length -= (size_t)count;
+    }
+    return NS_TRUE;
+}
+
+dnsPacket *dnsResolveTcp(dnsPacket *req, const char *server,
+                         unsigned short port, int timeout)
+{
+    Ns_Time wait = {timeout > 0 ? timeout : 5, 0};
+    NS_SOCKET sock = Ns_SockTimedConnect(server, port, &wait);
+    uint16_t length;
+    char *data = NULL;
+    dnsPacket *reply = NULL;
+
+    if (sock == NS_INVALID_SOCKET) return NULL;
+    Ns_SockSetNonBlocking(sock);
+    if (!dnsTcpTransfer(sock, req->buf.data, (size_t)req->buf.size + 2, &wait, NS_TRUE)
+        || !dnsTcpTransfer(sock, (char *)&length, sizeof(length), &wait, NS_FALSE)) goto done;
+    length = ntohs(length);
+    if (length < DNS_HEADER_LEN) goto done;
+    data = ns_malloc(length);
+    if (!dnsTcpTransfer(sock, data, length, &wait, NS_FALSE)) goto done;
+    reply = dnsParsePacket((unsigned char *)data, length);
+    if (reply != NULL && (reply->id != req->id || !DNS_GET_QR(reply->u)
+        || DNS_GET_TC(reply->u) || reply->qdcount != 1
+        || reply->qdlist->type != req->qdlist->type
+        || strcasecmp(reply->qdlist->name, req->qdlist->name) != 0)) {
+        dnsPacketFree(reply, 0);
+        reply = NULL;
+    }
+done:
+    ns_free(data);
+    ns_sockclose(sock);
+    return reply;
+}
+
 dnsPacket *dnsLookup(char *name, dnsType_t type, int *errcode)
 {
-    fd_set fds;
     char buf[DNS_BUFSIZE];
-    struct timeval tv;
     dnsServer *server = 0;
     dnsPacket *req, *reply;
-    int sock;
+    int sock = NS_INVALID_SOCKET;
 
     req = dnsPacketCreateQuery(name, type);
     dnsEncodePacket(req);
@@ -166,38 +207,37 @@ dnsPacket *dnsLookup(char *name, dnsType_t type, int *errcode)
             Ns_Log(Notice, "dnsLookup: %s: resolving %s...", server->name, name);
         }
 
-        // todo: don't hard-code port 53 (DNS port)
-        rc = Ns_GetSockAddr(saPtr, server->name, 53);
+        rc = Ns_GetSockAddr(saPtr, server->name, dnsResolverPort);
         if (rc != TCL_OK) {
             Ns_Log(Error, "dnsLookup: invalid server name '%s'", server->name);
-            return 0;
+            continue;
         }
 
+        if (sock != NS_INVALID_SOCKET) {
+            ns_close(sock);
+            sock = NS_INVALID_SOCKET;
+        }
         if (sock == NS_INVALID_SOCKET) {
             if ((sock = socket(saPtr->sa_family, SOCK_DGRAM, 0)) < 0) {
                 if (errcode != 0) {
                     *errcode = errno;
                 }
-                return 0;
+                continue;
             }
         }
-
-        //saddr.sin_addr.s_addr = server->ipaddr;
+        if (connect(sock, saPtr, Ns_SockaddrGetSockLen(saPtr)) != 0) {
+            continue;
+        }
         while (retries--) {
             ssize_t len;
 
-            len = sizeof(struct sockaddr_in);
-            if (sendto(sock, req->buf.data + 2, req->buf.size, 0, saPtr, (socklen_t)len) < 0) {
+            if (send(sock, req->buf.data + 2, req->buf.size, 0) < 0) {
                 if (dnsDebug > 3) {
                     Ns_Log(Error, "dnsLookup: %s: sendto: %s", server->name, strerror(errno));
                 }
                 continue;
             }
-            tv.tv_usec = 0;
-            tv.tv_sec = timeout;
-            FD_ZERO(&fds);
-            FD_SET(sock, &fds);
-            if (select(sock + 1, &fds, 0, 0, &tv) <= 0 || !FD_ISSET(sock, &fds)) {
+            if (Ns_SockWait(sock, NS_SOCK_READ, timeout) != NS_OK) {
                 if (dnsDebug > 3 && errno) {
                     Ns_Log(Error, "dnsLookup: %s: select: %s", server->name, strerror(errno));
                 }
@@ -213,7 +253,14 @@ dnsPacket *dnsLookup(char *name, dnsType_t type, int *errcode)
                 continue;
             }
             /* DNS packet id should be the same */
-            if (reply->id == req->id) {
+            if (reply->id == req->id && DNS_GET_QR(reply->u)
+                && reply->qdcount == 1 && reply->qdlist->type == req->qdlist->type
+                && strcasecmp(reply->qdlist->name, req->qdlist->name) == 0) {
+                if (DNS_GET_TC(reply->u)) {
+                    dnsPacketFree(reply, 0);
+                    reply = dnsResolveTcp(req, server->name, dnsResolverPort, timeout);
+                    if (reply == NULL) continue;
+                }
                 ns_close(sock);
                 dnsPacketFree(req, 0);
                 Ns_MutexLock(&dnsMutex);
@@ -234,12 +281,17 @@ dnsPacket *dnsLookup(char *name, dnsType_t type, int *errcode)
 
 dnsPacket *dnsResolve(char *name, dnsType_t type, const char *server, int timeout, int retries)
 {
-    fd_set fds;
+    return dnsResolveAt(name, type, server, 53, timeout, retries);
+}
+
+dnsPacket *dnsResolveAt(char *name, dnsType_t type, const char *server,
+                        unsigned short port, int timeout, int retries)
+{
     int sock;
     char buf[DNS_BUFSIZE];
     dnsPacket *req, *reply;
-    struct timeval tv;
-    struct sockaddr_in saddr;
+    struct NS_SOCKADDR_STORAGE sa;
+    struct sockaddr *saPtr = (struct sockaddr *)&sa;
 
     if (retries <= 0) {
         retries = 3;
@@ -247,23 +299,25 @@ dnsPacket *dnsResolve(char *name, dnsType_t type, const char *server, int timeou
     if (timeout <= 0) {
         timeout = 5;
     }
-    if ((sock = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
+    if (Ns_GetSockAddr(saPtr, server, port) != NS_OK) {
+        return NULL;
+    }
+    if ((sock = socket(saPtr->sa_family, SOCK_DGRAM, 0)) < 0) {
         if (dnsDebug > 3) {
             Ns_Log(Error, "dnsResolve: %s: socket: %s", name, strerror(errno));
         }
         return 0;
     }
-    /* fprintf(stderr, "==== dnsResolve name <%s> server <%s>\n", name, server);*/
-    saddr.sin_addr.s_addr = inet_addr(server);
-    saddr.sin_family = AF_INET;
-    saddr.sin_port = htons(53);
+    if (connect(sock, saPtr, Ns_SockaddrGetSockLen(saPtr)) != 0) {
+        ns_close(sock);
+        return NULL;
+    }
     req = dnsPacketCreateQuery(name, type);
     dnsEncodePacket(req);
     while (retries--) {
         ssize_t len;
 
-        len = sizeof(struct sockaddr_in);
-        if (sendto(sock, req->buf.data + 2, req->buf.size, 0, (struct sockaddr *) &saddr, (socklen_t)len) < 0) {
+        if (send(sock, req->buf.data + 2, req->buf.size, 0) < 0) {
             if (dnsDebug > 3) {
                 Ns_Log(Error, "dnsResolve: %s: sendto: %s", name, strerror(errno));
             }
@@ -272,11 +326,7 @@ dnsPacket *dnsResolve(char *name, dnsType_t type, const char *server, int timeou
         if (dnsDebug > 3) {
             Ns_Log(Notice, "dnsResolve: %s: %d: sending to %s, timeout=%d", name, req->id, server, timeout);
         }
-        tv.tv_usec = 0;
-        tv.tv_sec = timeout;
-        FD_ZERO(&fds);
-        FD_SET(sock, &fds);
-        if (select(sock + 1, &fds, 0, 0, &tv) <= 0 || !FD_ISSET(sock, &fds)) {
+        if (Ns_SockWait(sock, NS_SOCK_READ, timeout) != NS_OK) {
             if (dnsDebug > 3 && errno) {
                 Ns_Log(Error, "dnsResolve: %s: select: %s", name, strerror(errno));
             }
@@ -295,7 +345,14 @@ dnsPacket *dnsResolve(char *name, dnsType_t type, const char *server, int timeou
             continue;
         }
         /* DNS packet id should be the same */
-        if (reply->id == req->id) {
+        if (reply->id == req->id && DNS_GET_QR(reply->u)
+                && reply->qdcount == 1 && reply->qdlist->type == req->qdlist->type
+                && strcasecmp(reply->qdlist->name, req->qdlist->name) == 0) {
+            if (DNS_GET_TC(reply->u)) {
+                dnsPacketFree(reply, 0);
+                reply = dnsResolveTcp(req, server, port, timeout);
+                if (reply == NULL) continue;
+            }
             dnsPacketFree(req, 0);
             ns_close(sock);
             return reply;
@@ -408,6 +465,9 @@ void dnsRecordFree(dnsRecord *pkt)
     }
     ns_free(pkt->name);
     switch (pkt->type) {
+    case DNS_TYPE_TXT:
+        ns_free(pkt->data.txt);
+        break;
     case DNS_TYPE_MX:
         if (pkt->data.mx == 0) {
             break;
@@ -428,6 +488,7 @@ void dnsRecordFree(dnsRecord *pkt)
         ns_free(pkt->data.naptr->service);
         ns_free(pkt->data.naptr->regexp);
         ns_free(pkt->data.naptr->replace);
+        ns_free(pkt->data.naptr);
         break;
     case DNS_TYPE_SOA:
         if (pkt->data.soa == 0) {
@@ -444,7 +505,6 @@ void dnsRecordFree(dnsRecord *pkt)
     case DNS_TYPE_MINFO: /* fall through */
     case DNS_TYPE_OPT: /* fall through */
     case DNS_TYPE_SRV: /* fall through */
-    case DNS_TYPE_TXT: /* fall through */
     case DNS_TYPE_WKS: /* fall through */
         /*
          * TODO: double check, if not any of these records require freeing
@@ -477,6 +537,12 @@ dnsRecord *dnsRecordCreate(dnsRecord *from)
         rec->ttl = from->ttl;
         rec->len = from->len;
         switch (rec->type) {
+        case DNS_TYPE_TXT:
+            if (from->len != 0 && from->data.txt != NULL) {
+                rec->data.txt = ns_malloc(from->len);
+                memcpy(rec->data.txt, from->data.txt, from->len);
+            }
+            break;
         case DNS_TYPE_A: /* fall through */
         case DNS_TYPE_AAAA:
             rec->data.sa = from->data.sa;
@@ -521,7 +587,6 @@ dnsRecord *dnsRecordCreate(dnsRecord *from)
             break;
         case DNS_TYPE_WKS: /* fall through */
         case DNS_TYPE_HINFO: /* fall through */
-        case DNS_TYPE_TXT: /* fall through */
         case DNS_TYPE_MINFO: /* fall through */
         case DNS_TYPE_SRV: /* fall through */
         case DNS_TYPE_OPT: /* fall through */
@@ -546,7 +611,12 @@ dnsRecord *dnsRecordCreateAAAA(const char *name, const char *ipAddr)
     y->type = DNS_TYPE_AAAA;
     y->class = DNS_CLASS_INET;
     y->len = 16;
-    Ns_GetSockAddr((struct sockaddr *)&(y->data.sa), ipAddr, 0);
+    ((struct sockaddr *)&y->data.sa)->sa_family = AF_INET6;
+    if (ipAddr != NULL && inet_pton(AF_INET6, ipAddr,
+            &((struct sockaddr_in6 *)&y->data.sa)->sin6_addr) != 1) {
+        dnsRecordFree(y);
+        return NULL;
+    }
     y->ttl = dnsTTL;
     return y;
 }
@@ -561,9 +631,56 @@ dnsRecord *dnsRecordCreateA(const char *name, const char *ipAddr)
     y->type = DNS_TYPE_A;
     y->class = DNS_CLASS_INET;
     y->len = 4;
-    Ns_GetSockAddr((struct sockaddr *)&(y->data.sa), ipAddr, 0);
+    ((struct sockaddr *)&y->data.sa)->sa_family = AF_INET;
+    if (ipAddr != NULL && inet_pton(AF_INET, ipAddr,
+            &((struct sockaddr_in *)&y->data.sa)->sin_addr) != 1) {
+        dnsRecordFree(y);
+        return NULL;
+    }
     y->ttl = dnsTTL;
     return y;
+}
+
+/* A TXT value is a Tcl list of byte strings. Preserve string boundaries. */
+dnsRecord *dnsRecordCreateTXT(Tcl_Interp *interp, const char *name, Tcl_Obj *strings)
+{
+    Tcl_Obj **values;
+    int count, i;
+    size_t size = 0, offset = 0;
+    dnsRecord *rec;
+
+    if (Tcl_ListObjGetElements(interp, strings, &count, &values) != TCL_OK) {
+        return NULL;
+    }
+    if (count == 0) {
+        Tcl_SetObjResult(interp, Tcl_NewStringObj("TXT requires at least one string", -1));
+        return NULL;
+    }
+    for (i = 0; i < count; i++) {
+        int length;
+        (void)Tcl_GetByteArrayFromObj(values[i], &length);
+        if (length > 255 || size + (size_t)length + 1 > 65535) {
+            Tcl_SetObjResult(interp, Tcl_NewStringObj("TXT strings must be at most 255 bytes; RDATA at most 65535 bytes", -1));
+            return NULL;
+        }
+        size += (size_t)length + 1;
+    }
+    rec = dnsRecordCreate(NULL);
+    rec->name = ns_strdup(name);
+    rec->nsize = (short)strlen(name);
+    rec->type = DNS_TYPE_TXT;
+    rec->class = DNS_CLASS_INET;
+    rec->ttl = dnsTTL;
+    rec->len = (unsigned short)size;
+    rec->data.txt = ns_malloc(size);
+    for (i = 0; i < count; i++) {
+        int length;
+        unsigned char *bytes = Tcl_GetByteArrayFromObj(values[i], &length);
+        rec->data.txt[offset++] = (unsigned char)length;
+        memcpy(rec->data.txt + offset, bytes, (size_t)length);
+        offset += (size_t)length;
+    }
+    return rec;
 }
 
 dnsRecord *dnsRecordCreateNS(char *name, char *data)
@@ -576,7 +693,7 @@ dnsRecord *dnsRecordCreateNS(char *name, char *data)
     y->class = DNS_CLASS_INET;
     y->data.name = ns_strcopy(data);
     if (y->data.name != 0) {
-        y->len = (short)strlen(y->data.name);
+        y->len = (unsigned short)strlen(y->data.name);
     }
     y->ttl = dnsTTL;
     return y;
@@ -592,7 +709,7 @@ dnsRecord *dnsRecordCreateCNAME(char *name, char *data)
     y->class = DNS_CLASS_INET;
     y->data.name = ns_strcopy(data);
     if (y->data.name != 0) {
-        y->len = (short)strlen(y->data.name);
+        y->len = (unsigned short)strlen(y->data.name);
     }
     y->ttl = dnsTTL;
     return y;
@@ -608,7 +725,7 @@ dnsRecord *dnsRecordCreatePTR(char *name, char *data)
     y->class = DNS_CLASS_INET;
     y->data.name = ns_strcopy(data);
     if (y->data.name != 0) {
-        y->len = (short)strlen(y->data.name);
+        y->len = (unsigned short)strlen(y->data.name);
     }
     y->ttl = dnsTTL;
     return y;
@@ -699,9 +816,21 @@ Tcl_Obj *dnsRecordCreateTclObj(Tcl_Interp *interp, dnsRecord *drec)
         Tcl_ListObjAppendElement(interp, obj, Tcl_NewStringObj(drec->name, -1));
         Tcl_ListObjAppendElement(interp, obj, Tcl_NewStringObj((char *) dnsTypeStr(drec->type), -1));
         switch (drec->type) {
+        case DNS_TYPE_TXT: {
+            Tcl_Obj *strings = Tcl_NewListObj(0, NULL);
+            size_t offset = 0;
+            while (offset < drec->len && drec->data.txt != NULL) {
+                int length = drec->data.txt[offset++];
+                Tcl_ListObjAppendElement(interp, strings,
+                    Tcl_NewByteArrayObj(drec->data.txt + offset, length));
+                offset += (size_t)length;
+            }
+            Tcl_ListObjAppendElement(interp, obj, strings);
+            break;
+        }
         case DNS_TYPE_A: /* fall through */
         case DNS_TYPE_AAAA:
-            saPtr = (struct sockaddr *)&(drec->data.sa),
+            saPtr = (struct sockaddr *)&(drec->data.sa);
             Tcl_ListObjAppendElement(interp, obj,
                                      Tcl_NewStringObj(ns_inet_ntop(saPtr, ipString, sizeof(ipString)), -1));
             break;
@@ -729,11 +858,11 @@ Tcl_Obj *dnsRecordCreateTclObj(Tcl_Interp *interp, dnsRecord *drec)
             }
             Tcl_ListObjAppendElement(interp, obj, Tcl_NewStringObj(drec->data.soa->mname, -1));
             Tcl_ListObjAppendElement(interp, obj, Tcl_NewStringObj(drec->data.soa->rname, -1));
-            Tcl_ListObjAppendElement(interp, obj, Tcl_NewIntObj(drec->data.soa->serial));
-            Tcl_ListObjAppendElement(interp, obj, Tcl_NewIntObj(drec->data.soa->refresh));
-            Tcl_ListObjAppendElement(interp, obj, Tcl_NewIntObj(drec->data.soa->retry));
-            Tcl_ListObjAppendElement(interp, obj, Tcl_NewIntObj(drec->data.soa->expire));
-            Tcl_ListObjAppendElement(interp, obj, Tcl_NewIntObj(drec->data.soa->ttl));
+            Tcl_ListObjAppendElement(interp, obj, Tcl_NewWideIntObj((Tcl_WideInt)drec->data.soa->serial));
+            Tcl_ListObjAppendElement(interp, obj, Tcl_NewWideIntObj((Tcl_WideInt)drec->data.soa->refresh));
+            Tcl_ListObjAppendElement(interp, obj, Tcl_NewWideIntObj((Tcl_WideInt)drec->data.soa->retry));
+            Tcl_ListObjAppendElement(interp, obj, Tcl_NewWideIntObj((Tcl_WideInt)drec->data.soa->expire));
+            Tcl_ListObjAppendElement(interp, obj, Tcl_NewWideIntObj((Tcl_WideInt)drec->data.soa->ttl));
             break;
         case DNS_TYPE_ANY:   /* fall through */
         case DNS_TYPE_CNAME: /* fall through */
@@ -743,12 +872,11 @@ Tcl_Obj *dnsRecordCreateTclObj(Tcl_Interp *interp, dnsRecord *drec)
         case DNS_TYPE_OPT:   /* fall through */
         case DNS_TYPE_PTR:   /* fall through */
         case DNS_TYPE_SRV:   /* fall through */
-        case DNS_TYPE_TXT:   /* fall through */
         case DNS_TYPE_WKS:   /* fall through */
         default:
             Tcl_ListObjAppendElement(interp, obj, Tcl_NewStringObj(drec->data.name, -1));
         }
-        Tcl_ListObjAppendElement(interp, obj, Tcl_NewIntObj(drec->ttl));
+        Tcl_ListObjAppendElement(interp, obj, Tcl_NewWideIntObj((Tcl_WideInt)drec->ttl));
         Tcl_ListObjAppendElement(interp, list, obj);
         drec = drec->next;
     }
@@ -781,7 +909,7 @@ dnsRecord *dnsRecordAppend(dnsRecord **list, dnsRecord *pkt)
         return 0;
     }
     for (; *list; list = &(*list)->next) {
-        ;
+        pkt->prev = *list;
     }
     *list = pkt;
     return *list;
@@ -793,6 +921,7 @@ dnsRecord *dnsRecordInsert(dnsRecord **list, dnsRecord *pkt)
         return 0;
     }
     pkt->next = *list;
+    if (*list != NULL) (*list)->prev = pkt;
     *list = pkt;
     return *list;
 }
@@ -824,10 +953,21 @@ int dnsRecordSearch(dnsRecord *list, dnsRecord *rec, int replace)
     dnsRecord *drec;
 
     for (drec = list; drec; drec = drec->next) {
-        if (drec->type != rec->type) {
+        if (drec->type != rec->type || strcasecmp(drec->name, rec->name) != 0) {
             continue;
         }
         switch (drec->type) {
+        case DNS_TYPE_TXT:
+            if (rec->len == drec->len && (rec->len == 0
+                || (rec->data.txt != NULL && drec->data.txt != NULL
+                    && memcmp(rec->data.txt, drec->data.txt, rec->len) == 0))) {
+                if (replace != 0) {
+                    drec->ttl = rec->ttl;
+                    drec->timestamp = rec->timestamp;
+                }
+                return 1;
+            }
+            break;
         case DNS_TYPE_A: /* fall through */
         case DNS_TYPE_AAAA:
             if (Ns_SockaddrSameIP((struct sockaddr *)&(rec->data.sa),
@@ -906,7 +1046,6 @@ int dnsRecordSearch(dnsRecord *list, dnsRecord *rec, int replace)
         case DNS_TYPE_MINFO: /* fall through */
         case DNS_TYPE_OPT:   /* fall through */
         case DNS_TYPE_SRV:   /* fall through */
-        case DNS_TYPE_TXT:   /* fall through */
         case DNS_TYPE_WKS:   /* fall through */
         default:
             return -1;
@@ -917,73 +1056,69 @@ int dnsRecordSearch(dnsRecord *list, dnsRecord *rec, int replace)
 
 int dnsParseString(dnsPacket *pkt, char **buf)
 {
-    int len;
-
-    if (!(len = *pkt->buf.ptr++)) {
-        return 0;
-    } else if (pkt->buf.ptr + len > pkt->buf.data + pkt->buf.allocated) {
+    size_t len;
+    char *end = pkt->buf.data + 2 + pkt->buf.size;
+    if (pkt->buf.ptr >= end) {
         return -1;
-    } else {
-        *buf = ns_malloc((size_t)len + 1u);
-        strncpy(*buf, pkt->buf.ptr, len);
-        (*buf)[len] = 0;
-        pkt->buf.ptr += len;
-        return 0;
     }
+    len = (unsigned char)*pkt->buf.ptr++;
+    if ((size_t)(end - pkt->buf.ptr) < len) {
+        return -1;
+    }
+    *buf = ns_malloc(len + 1);
+    memcpy(*buf, pkt->buf.ptr, len);
+    (*buf)[len] = '\0';
+    pkt->buf.ptr += len;
+    return 0;
 }
 
 short dnsParseName(dnsPacket *pkt, char **ptr, char *buf, int buflen, short pos, int level)
 {
-    unsigned short i, len, offset;
-    char *p;
-
+    char *end = pkt->buf.data + 2 + pkt->buf.size;
     if (level > 15) {
-        Ns_Log(Error, "nsdns: infinite loop %ld: %d", (*ptr - pkt->buf.data) - 2, level);
-        return -9;
+        return -1;
     }
-    while ((len = (unsigned short)*((*ptr)++)) != 0u) {
-        switch (len & 0xC0) {
-        case 0xC0:
-            if ((offset = (unsigned short)((len & ~0xC0) << 8) + (u_char) **ptr) >= pkt->buf.size) {
-                return -1;
+    while (*ptr < end) {
+        unsigned int len = (unsigned char)*(*ptr)++;
+        if (len == 0) {
+            if (pos > 0 && buf[pos - 1] == '.') {
+                pos--;
             }
-            (*ptr)++;
-            p = &pkt->buf.data[offset + 2];
+            buf[pos] = '\0';
+            return pos;
+        }
+        if ((len & 0xc0u) == 0xc0u) {
+            unsigned int offset;
+            char *p;
+            if (*ptr >= end) return -1;
+            offset = ((len & 0x3fu) << 8) | (unsigned char)*(*ptr)++;
+            if (offset >= pkt->buf.size) return -1;
+            p = pkt->buf.data + 2 + offset;
             return dnsParseName(pkt, &p, buf, buflen, pos, level + 1);
-        case 0x80:
-        case 0x40:
-            return -2;
         }
-        if (len > buflen) {
-            return -3;
+        if (len > 63 || (size_t)(end - *ptr) < len
+            || (unsigned int)pos + len + 1 >= (unsigned int)buflen) {
+            return -1;
         }
-        for (i = 0; i < len; i++) {
-            if (--buflen <= 0) {
-                return -4;
-            }
-            buf[pos++] = **ptr;
-            (*ptr)++;
-        }
-        if (--buflen <= 0) {
-            return -5;
-        }
+        memcpy(buf + pos, *ptr, len);
+        pos += (short)len;
+        *ptr += len;
         buf[pos++] = '.';
     }
-    buf[pos] = 0;
-    /* Remove last . in the name */
-    if (buf[pos - 1] == '.') {
-        buf[--pos] = 0;
-    }
-    return pos;
+    return -1;
 }
 
 dnsPacket *dnsParseHeader(void *buf, size_t size)
 {
-    unsigned short *p;
+    unsigned short p[6];
     dnsPacket *pkt;
 
+    if (size < DNS_HEADER_LEN || size > 65535) {
+        return NULL;
+    }
+
     pkt = ns_calloc(1, sizeof(dnsPacket));
-    p = (unsigned short *) buf;
+    memcpy(p, buf, sizeof(p));
     pkt->id = ntohs(p[0]);
     pkt->u = ntohs(p[1]);
     pkt->qdcount = ntohs(p[2]);
@@ -993,7 +1128,7 @@ dnsPacket *dnsParseHeader(void *buf, size_t size)
     /* First two bytes are reserved for packet length
        in TCP mode plus some overhead in case we compress worse
        than it was */
-    pkt->buf.allocated = (unsigned short)size + 128;
+    pkt->buf.allocated = size + 128;
     pkt->buf.data = ns_malloc(pkt->buf.allocated);
     /* Ns_Log(Debug,"parse[%d]: %x %x, %d",getpid(),pkt,pkt->buf.data,pkt->buf.allocated); */
     pkt->buf.size = (unsigned short)size;
@@ -1005,7 +1140,8 @@ dnsPacket *dnsParseHeader(void *buf, size_t size)
 dnsRecord *dnsParseRecord(dnsPacket *pkt, int query)
 {
     /* int offset; */
-    unsigned long ul;
+    uint32_t ul;
+    char *rdataEnd = NULL;
     unsigned short us;
     char name[256] = {'\0'};
     dnsRecord *y;
@@ -1019,7 +1155,7 @@ dnsRecord *dnsParseRecord(dnsPacket *pkt, int query)
     y->nsize = dnsParseName(pkt, &pkt->buf.ptr, name, 255, 0, 0);
     /* fprintf(stderr, "=== dnsParseRecord name %s, len %d\n", name, y->nsize); */
     if (y->nsize < 0) {
-        snprintf(name, 255, "invalid name: %d %s: ", y->nsize, pkt->buf.ptr);
+        snprintf(name, 255, "invalid name: %d", y->nsize);
         goto err;
     }
     y->name = ns_malloc((size_t)y->nsize + 1u);
@@ -1028,7 +1164,7 @@ dnsRecord *dnsParseRecord(dnsPacket *pkt, int query)
     /*
      * Get the type of data
      */
-    if (pkt->buf.ptr + 2 > pkt->buf.data + pkt->buf.allocated) {
+    if (pkt->buf.ptr + 2 > pkt->buf.data + 2 + pkt->buf.size) {
         strcpy(name, "invalid type position");
         goto err;
     }
@@ -1038,7 +1174,7 @@ dnsRecord *dnsParseRecord(dnsPacket *pkt, int query)
     /*
      * Get the class type
      */
-    if (pkt->buf.ptr + 2 > pkt->buf.data + pkt->buf.allocated) {
+    if (pkt->buf.ptr + 2 > pkt->buf.data + 2 + pkt->buf.size) {
         strcpy(name, "invalid class position");
         goto err;
     }
@@ -1051,7 +1187,7 @@ dnsRecord *dnsParseRecord(dnsPacket *pkt, int query)
     /*
      * Answer blocks carry a TTL and the actual data.
      */
-    if (pkt->buf.ptr + 4 > pkt->buf.data + pkt->buf.allocated) {
+    if (pkt->buf.ptr + 4 > pkt->buf.data + 2 + pkt->buf.size) {
         strcpy(name, "invalid TTL position");
         goto err;
     }
@@ -1062,40 +1198,53 @@ dnsRecord *dnsParseRecord(dnsPacket *pkt, int query)
     /*
      * Fetch the resource data.
      */
-    if (pkt->buf.ptr + 2 > pkt->buf.data + pkt->buf.allocated) {
+    if (pkt->buf.ptr + 2 > pkt->buf.data + 2 + pkt->buf.size) {
         strcpy(name, "invalid data position");
         goto err;
     }
     memcpy(&us, pkt->buf.ptr, sizeof(us));
 
-    if (!(y->len = (short)ntohs(us))) {
-        if (y->type != DNS_TYPE_OPT) {
-            strcpy(name, "empty data len");
-            goto err;
-        }
-        goto rec;
-    }
+    y->len = ntohs(us);
     pkt->buf.ptr += 2;
-    if (pkt->buf.ptr + y->len > pkt->buf.data + pkt->buf.allocated) {
+    if ((size_t)(pkt->buf.data + 2 + pkt->buf.size - pkt->buf.ptr) < y->len) {
         strcpy(name, "invalid data len");
         goto err;
     }
+    rdataEnd = pkt->buf.ptr + y->len;
     switch (y->type) {
+    case DNS_TYPE_TXT: {
+        char *p = pkt->buf.ptr;
+        if (y->len == 0) goto err;
+        while (p < rdataEnd) {
+            unsigned int length = (unsigned char)*p++;
+            if ((size_t)(rdataEnd - p) < length) goto err;
+            p += length;
+        }
+        y->data.txt = ns_malloc(y->len);
+        memcpy(y->data.txt, pkt->buf.ptr, y->len);
+        pkt->buf.ptr = rdataEnd;
+        break;
+    }
     case DNS_TYPE_A:
         { struct sockaddr_in *saPtr = (struct sockaddr_in *)&(y->data.sa);
+            if (y->len != 4) goto err;
+            saPtr->sin_family = AF_INET;
             memcpy(&(saPtr->sin_addr), pkt->buf.ptr, 4);
             pkt->buf.ptr += 4;
             break;
         }
     case DNS_TYPE_AAAA:
         { struct sockaddr_in6 *saPtr = (struct sockaddr_in6 *)&(y->data.sa);
+            if (y->len != 16) goto err;
+            saPtr->sin6_family = AF_INET6;
             memcpy(&(saPtr->sin6_addr), pkt->buf.ptr, 16);
             pkt->buf.ptr += 16;
             break;
         }
 
     case DNS_TYPE_MX:
-        y->data.soa = ns_calloc(1, sizeof(dnsSOA));
+        if (y->len < 3) goto err;
+        y->data.mx = ns_calloc(1, sizeof(dnsMX));
         memcpy(&us, pkt->buf.ptr, sizeof(us));
         y->data.mx->preference = ntohs(us);
         pkt->buf.ptr += 2;
@@ -1114,12 +1263,13 @@ dnsRecord *dnsParseRecord(dnsPacket *pkt, int query)
         y->data.name = ns_strdup(name);
         break;
     case DNS_TYPE_NAPTR:
+        if (y->len < 8) goto err;
         y->data.naptr = ns_calloc(1, sizeof(dnsNAPTR));
         memcpy(&us, pkt->buf.ptr, sizeof(us));
         y->data.naptr->order = (short)ntohs(us);
         pkt->buf.ptr += 2;
         memcpy(&us, pkt->buf.ptr, sizeof(us));
-        y->data.mx->preference = ntohs(us);
+        y->data.naptr->preference = (short)ntohs(us);
         pkt->buf.ptr += 2;
         /* flags */
         if (dnsParseString(pkt, &y->data.naptr->flags) < 0) {
@@ -1154,7 +1304,7 @@ dnsRecord *dnsParseRecord(dnsPacket *pkt, int query)
             goto err;
         }
         y->data.soa->rname = ns_strdup(name);
-        if (pkt->buf.ptr + 20 > pkt->buf.data + pkt->buf.allocated) {
+        if (pkt->buf.ptr + 20 > pkt->buf.data + 2 + pkt->buf.size) {
             strcpy(name, "invalid SOA data len");
             goto err;
         }
@@ -1180,16 +1330,21 @@ dnsRecord *dnsParseRecord(dnsPacket *pkt, int query)
     case DNS_TYPE_MINFO: /* fall through */
     case DNS_TYPE_OPT:   /* fall through */
     case DNS_TYPE_SRV:   /* fall through */
-    case DNS_TYPE_TXT:   /* fall through */
     case DNS_TYPE_WKS:   /* fall through */
+    default:
+        pkt->buf.ptr = rdataEnd;
         break;
+    }
+    if (pkt->buf.ptr != rdataEnd) {
+        strcpy(name, "invalid RDATA length");
+        goto err;
     }
   rec:
     dnsRecordLog(y, 9, "Record parsed: ");
     return y;
   err:
     {
-        dnsRecordLog(y, -1, name);
+        Ns_Log(Warning, "nsdns: malformed DNS record: %s", name);
         dnsRecordFree(y);
     }
     return 0;
@@ -1203,6 +1358,8 @@ dnsPacket *dnsParsePacket(unsigned char *packet, size_t size)
     dnsRecord *rec;
 
     pkt = dnsParseHeader(packet, size);
+    if (pkt == NULL) return NULL;
+    if (pkt->qdcount != 1) goto err;
     for (i = 0; i < pkt->qdcount; i++) {
         if (!(rec = dnsParseRecord(pkt, 1))) {
             goto err;
@@ -1240,7 +1397,7 @@ dnsPacket *dnsParsePacket(unsigned char *packet, size_t size)
 
 void dnsEncodeName(dnsPacket *pkt, char *name, int compress)
 {
-    dnsEncodeGrow(pkt, ((name != NULL) ? strlen(name) + 1u : 1u), "name");
+    dnsEncodeGrow(pkt, ((name != NULL) ? strlen(name) + 2u : 1u), "name");
     if (name != 0) {
         unsigned int c;
         int          k = 0;
@@ -1259,7 +1416,7 @@ void dnsEncodeName(dnsPacket *pkt, char *name, int compress)
              * Find already saved domain name
              */
             for (nm = pkt->nmlist; compress && nm; nm = nm->next) {
-                if (!strcasecmp(nm->name, &name[k])) {
+                if (nm->offset >= 0 && nm->offset < 16384 && !strcasecmp(nm->name, &name[k])) {
                     dnsEncodePtr(pkt, nm->offset);
                     return;
                 }
@@ -1269,7 +1426,8 @@ void dnsEncodeName(dnsPacket *pkt, char *name, int compress)
             nm->next = pkt->nmlist;
             pkt->nmlist = nm;
             nm->name = ns_strdup(&name[k]);
-            nm->offset = (short)((pkt->buf.ptr - pkt->buf.data) - 2);
+            nm->offset = pkt->buf.ptr - pkt->buf.data - 2 < 16384
+                         ? (short)(pkt->buf.ptr - pkt->buf.data - 2) : -1;
             /* Encode name part inline */
             *pkt->buf.ptr++ = (char)((len & 0x3F));
             for (i = 0; i < len; i++) {
@@ -1285,16 +1443,16 @@ void dnsEncodeName(dnsPacket *pkt, char *name, int compress)
 
 void dnsEncodeHeader(dnsPacket *pkt)
 {
-    unsigned short *p = (unsigned short *) pkt->buf.data;
-
-    pkt->buf.size = (unsigned short)(pkt->buf.ptr - pkt->buf.data) - 2;
-    p[0] = htons(pkt->buf.size);
-    p[1] = htons(pkt->id);
-    p[2] = htons(pkt->u);
-    p[3] = htons(pkt->qdcount);
-    p[4] = htons(pkt->ancount);
-    p[5] = htons(pkt->nscount);
-    p[6] = htons(pkt->arcount);
+    uint16_t header[7];
+    pkt->buf.size = (unsigned short)(pkt->buf.ptr - pkt->buf.data - 2);
+    header[0] = htons(pkt->buf.size);
+    header[1] = htons(pkt->id);
+    header[2] = htons(pkt->u);
+    header[3] = htons(pkt->qdcount);
+    header[4] = htons(pkt->ancount);
+    header[5] = htons(pkt->nscount);
+    header[6] = htons(pkt->arcount);
+    memcpy(pkt->buf.data, header, sizeof(header));
 }
 
 void dnsEncodePtr(dnsPacket *pkt, int offset)
@@ -1319,6 +1477,7 @@ void dnsEncodeLong(dnsPacket *pkt, unsigned long num)
 
 void dnsEncodeData(dnsPacket *pkt, void *ptr, int len)
 {
+    dnsEncodeGrow(pkt, (size_t)len, "data");
     memcpy(pkt->buf.ptr, ptr, (unsigned) len);
     pkt->buf.ptr += len;
 }
@@ -1326,6 +1485,7 @@ void dnsEncodeData(dnsPacket *pkt, void *ptr, int len)
 void dnsEncodeString(dnsPacket *pkt, char *str)
 {
     size_t len = (str != 0) ? strlen(str) : 0;
+    dnsEncodeGrow(pkt, len + 1, "string");
     *pkt->buf.ptr++ = (char)UCHAR(len);
     if (len != 0u) {
         memcpy(pkt->buf.ptr, str, len);
@@ -1351,12 +1511,16 @@ void dnsEncodeRecord(dnsPacket *pkt, dnsRecord *list)
     dnsEncodeGrow(pkt, 12, "pkt:hdr");
     for (; list; list = list->next) {
         dnsEncodeName(pkt, list->name, 1);
-        dnsEncodeGrow(pkt, 16, "pkt:data");
-        dnsEncodeShort(pkt, list->type);
+        dnsEncodeGrow(pkt, 26, "pkt:data");
+        dnsEncodeShort(pkt, (int)list->type);
         dnsEncodeShort(pkt, list->class);
         dnsEncodeLong(pkt, list->ttl);
         dnsEncodeBegin(pkt);
         switch (list->type) {
+        case DNS_TYPE_TXT:
+            dnsEncodeGrow(pkt, list->len, "pkt:txt");
+            dnsEncodeData(pkt, list->data.txt, list->len);
+            break;
         case DNS_TYPE_A:
             { struct sockaddr_in *saPtr = (struct sockaddr_in *)&(list->data.sa);
                 dnsEncodeData(pkt, &(saPtr->sin_addr), 4);
@@ -1400,7 +1564,6 @@ void dnsEncodeRecord(dnsPacket *pkt, dnsRecord *list)
         case DNS_TYPE_MINFO: /* fall through */
         case DNS_TYPE_OPT:   /* fall through */
         case DNS_TYPE_SRV:   /* fall through */
-        case DNS_TYPE_TXT:   /* fall through */
         case DNS_TYPE_WKS:   /* fall through */
             break;
         }
@@ -1410,24 +1573,64 @@ void dnsEncodeRecord(dnsPacket *pkt, dnsRecord *list)
 
 void dnsEncodePacket(dnsPacket *pkt)
 {
-    pkt->buf.ptr = &pkt->buf.data[DNS_HEADER_LEN + 2];
-    /* Encode query part */
-    dnsEncodeName(pkt, pkt->qdlist->name, 1);
-    dnsEncodeShort(pkt, pkt->qdlist->type);
-    dnsEncodeShort(pkt, pkt->qdlist->class);
-    /* Encode answer records */
-    dnsEncodeRecord(pkt, pkt->anlist);
-    dnsEncodeRecord(pkt, pkt->nslist);
-    dnsEncodeRecord(pkt, pkt->arlist);
+    dnsEncodePacketLimit(pkt, 65535);
+}
+
+/* Stop at a record boundary, and write counts for the records actually sent. */
+void dnsEncodePacketLimit(dnsPacket *pkt, size_t limit)
+{
+    dnsRecord *record;
+    dnsRecord *sections[3] = {pkt->anlist, pkt->nslist, pkt->arlist};
+    uint16_t counts[3] = {0, 0, 0};
+    uint16_t saved[3] = {pkt->ancount, pkt->nscount, pkt->arcount};
+    unsigned short flags = pkt->u;
+    int section;
+
+    while (pkt->nmlist != NULL) {
+        dnsName *next = pkt->nmlist->next;
+        ns_free(pkt->nmlist->name);
+        ns_free(pkt->nmlist);
+        pkt->nmlist = next;
+    }
+    pkt->buf.ptr = pkt->buf.data + DNS_HEADER_LEN + 2;
+    pkt->buf.rec = NULL;
+    for (record = pkt->qdlist; record != NULL; record = record->next) {
+        dnsEncodeName(pkt, record->name, 1);
+        dnsEncodeGrow(pkt, 4, "question");
+        dnsEncodeShort(pkt, (int)record->type);
+        dnsEncodeShort(pkt, record->class);
+    }
+    for (section = 0; section < 3; section++) {
+        for (record = sections[section]; record != NULL; record = record->next) {
+            dnsRecord single = *record;
+            size_t offset = (size_t)(pkt->buf.ptr - pkt->buf.data);
+            single.next = NULL;
+            dnsEncodeRecord(pkt, &single);
+            if ((size_t)(pkt->buf.ptr - pkt->buf.data) - 2 > limit) {
+                pkt->buf.ptr = pkt->buf.data + offset;
+                DNS_SET_TC(pkt->u, 1);
+                goto header;
+            }
+            counts[section]++;
+        }
+    }
+header:
+    pkt->ancount = counts[0];
+    pkt->nscount = counts[1];
+    pkt->arcount = counts[2];
     dnsEncodeHeader(pkt);
+    pkt->ancount = saved[0];
+    pkt->nscount = saved[1];
+    pkt->arcount = saved[2];
+    pkt->u = flags;
 }
 
 void dnsEncodeGrow(dnsPacket *pkt, size_t size, const char *UNUSED(proc))
 {
     size_t offset = (size_t)(pkt->buf.ptr - pkt->buf.data);
-    ssize_t roffset = pkt->buf.rec - pkt->buf.data;
+    size_t roffset = pkt->buf.rec != NULL ? (size_t)(pkt->buf.rec - pkt->buf.data) : 0;
     if (offset + size >= pkt->buf.allocated) {
-        pkt->buf.allocated += 256;
+        pkt->buf.allocated = offset + size + 256;
         /* Ns_Log(Debug,"grow: %x: before: %x, %d,%d,%d",pkt,pkt->buf.data,offset,size,pkt->buf.allocated); */
         pkt->buf.data = ns_realloc(pkt->buf.data, pkt->buf.allocated);
         /* Ns_Log(Debug,"grow: %s: %x: after: %x, %d,%d,%d",proc,pkt,pkt->buf.data,offset,size,pkt->buf.allocated); */
@@ -1461,7 +1664,7 @@ dnsPacket *dnsPacketCreateReply(dnsPacket *req)
     return pkt;
 }
 
-dnsPacket *dnsPacketCreateQuery(char *name, dnsType_t type)
+dnsPacket *dnsPacketCreateQuery(const char *name, dnsType_t type)
 {
     dnsPacket *pkt = NULL;
 
@@ -1475,7 +1678,11 @@ dnsPacket *dnsPacketCreateQuery(char *name, dnsType_t type)
     pkt->buf.data = ns_calloc(1, pkt->buf.allocated);
     /* Ns_Log(Debug,"allocq[%d]: %x: %x",getpid(),pkt,pkt->buf.data); */
     if (name != 0) {
-        dnsRecord *rec = dnsRecordCreateA(name, "0.0.0.0");
+        dnsRecord *rec = dnsRecordCreate(NULL);
+        rec->name = ns_strdup(name);
+        rec->nsize = (short)strlen(name);
+        rec->class = DNS_CLASS_INET;
+        rec->type = DNS_TYPE_A;
 
         dnsPacketAddRecord(pkt, &pkt->qdlist, &pkt->qdcount, rec);
         if (type != 0) {
@@ -1549,7 +1756,9 @@ void dnsPacketFree(dnsPacket *pkt, dnsType_t UNUSED(type))
 int dnsPacketAddRecord(dnsPacket *UNUSED(pkt), dnsRecord **list, uint16_t *count, dnsRecord *rec)
 {
     /* Do not allow duplicate or broken records */
+    if (rec == NULL) return -1;
     if (dnsRecordSearch(*list, rec, 0)) {
+        dnsRecordFree(rec);
         return -1;
     }
     dnsRecordAppend(list, rec);
@@ -1560,7 +1769,9 @@ int dnsPacketAddRecord(dnsPacket *UNUSED(pkt), dnsRecord **list, uint16_t *count
 int dnsPacketInsertRecord(dnsPacket *UNUSED(pkt), dnsRecord **list, uint16_t *count, dnsRecord *rec)
 {
     /* Do not allow duplicate or broken records */
+    if (rec == NULL) return -1;
     if (dnsRecordSearch(*list, rec, 0)) {
+        dnsRecordFree(rec);
         return -1;
     }
     dnsRecordInsert(list, rec);
@@ -1568,7 +1779,7 @@ int dnsPacketInsertRecord(dnsPacket *UNUSED(pkt), dnsRecord **list, uint16_t *co
     return 0;
 }
 
-const char *dnsTypeStr(int type)
+const char *dnsTypeStr(dnsType_t type)
 {
     int i = 0;
     while (dnsTypes[i].name) {
@@ -1580,7 +1791,7 @@ const char *dnsTypeStr(int type)
     return "unknown";
 }
 
-dnsType_t dnsType(char *name)
+dnsType_t dnsType(const char *name)
 {
     int i = 0;
     while (dnsTypes[i].name) {

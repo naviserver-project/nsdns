@@ -1,0 +1,67 @@
+package require tcltest 2.2
+namespace import ::tcltest::*
+source [file join [file dirname [info script]] support.tcl]
+
+test dns-metadata-1.1 {module introspection reports build and ABI metadata} -constraints {nsdns moduleInfo} -body {
+    set info [dict get [ns_server modules] nsdns]
+    list [dict get $info name] [dict get $info version] [dict get $info type] [dict get $info abi] [expr {[dict get $info tag] ne ""}]
+} -result {nsdns 0.9.0 module 1 1}
+
+test dns-hosts-1.1 {hosts import supports IPv6, aliases, and inline comments} -constraints nsdns -setup {
+    source [file join [file dirname [info script]] .. dns_procs.tcl]
+    set hosts [makeFile "2001:db8::99 hosts6.test alias6.test # comment\n192.0.2.99 hosts4.test\n" hosts]
+} -body {
+    dns_reload $hosts
+    list [lindex [ns_dns find hosts6.test] 0 1] [lindex [ns_dns find alias6.test] 0 2] \
+        [lindex [ns_dns find hosts4.test] 0 1] [ns_dns find comment]
+} -cleanup {removeFile hosts; ns_dns flush} -result {AAAA 2001:db8::99 A {}}
+
+test dns-aaaa-1.1 {numeric IPv6 survives cache storage} -constraints nsdns -setup {ns_dns flush} -body {
+    ns_dns add host.test AAAA 2001:db8::10 0
+    ns_dns find host.test
+} -cleanup {ns_dns flush} -result {{host.test AAAA 2001:db8::10 0}}
+
+foreach {type address} {AAAA 127.0.0.1 A ::1 AAAA not-an-address} {
+    test dns-address-1.$type-$address {reject invalid or wrong-family addresses} -constraints nsdns -body {
+        ns_dns add invalid.test $type $address
+    } -returnCodes error -result {invalid numeric address for record type}
+}
+
+test dns-txt-1.1 {TXT preserves spaces, empty strings, binary bytes, and deduplicates} -constraints nsdns -setup {ns_dns flush} -body {
+    set strings [list "hello world" "" [binary format H* 00ff]]
+    ns_dns add txt.test TXT $strings 0
+    ns_dns add txt.test TXT $strings 0
+    set records [ns_dns find txt.test]
+    set value [lindex $records 0 2]
+    list [llength $records] [lindex $value 0] [lindex $value 1] [binary encode hex [lindex $value 2]]
+} -cleanup {ns_dns flush} -result {1 {hello world} {} 00ff}
+
+test dns-txt-1.2 {multiple distinct TXT records and 255-byte boundary} -constraints nsdns -setup {ns_dns flush} -body {
+    ns_dns add txt.test TXT [list [string repeat x 255]] 0
+    ns_dns add txt.test TXT [list other] 0
+    lsort -integer [lmap record [ns_dns find txt.test] {string length [lindex $record 2 0]}]
+} -cleanup {ns_dns flush} -result {5 255}
+
+test dns-txt-1.3 {empty TXT list is invalid} -constraints nsdns -body {
+    ns_dns add invalid.test TXT {}
+} -returnCodes error -result {TXT requires at least one string}
+
+test dns-txt-1.4 {256-byte strings are invalid} -constraints nsdns -body {
+    ns_dns add invalid.test TXT [list [string repeat x 256]]
+} -returnCodes error -result {TXT strings must be at most 255 bytes; RDATA at most 65535 bytes}
+
+test dns-delete-1.1 {deleting TXT preserves another type, then removes final record} -constraints nsdns -setup {ns_dns flush} -body {
+    ns_dns add delete.test A 192.0.2.1
+    ns_dns add delete.test TXT [list text]
+    ns_dns del delete.test TXT
+    set retained [lindex [ns_dns find delete.test] 0 1]
+    ns_dns del delete.test A
+    list $retained [ns_dns find delete.test]
+} -cleanup {ns_dns flush} -result {A {}}
+
+test dns-client-1.1 {client-specific AAAA needs no optional TTL} -constraints {nsdns ipv6} -body {
+    ns_dns clientadd 2001:db8::abcd client.test AAAA 2001:db8::20
+    lindex [ns_dns clientfind 2001:db8::abcd client.test] 0 2
+} -cleanup {ns_dns clientdel 2001:db8::abcd client.test AAAA} -result 2001:db8::20
+
+cleanupTests

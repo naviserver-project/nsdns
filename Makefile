@@ -1,3 +1,5 @@
+.DEFAULT_GOAL := all
+
 ifndef NAVISERVER
     NAVISERVER  = /usr/local/ns
 endif
@@ -5,6 +7,7 @@ endif
 #
 # Module name
 #
+MODNAME  = nsdns
 MOD      =  nsdns.so
 
 #
@@ -26,3 +29,10 @@ install-procs: $(PROCS)
 	for f in $(PROCS); do $(INSTALL_SH) $$f $(INSTTCL)/; done
 
 
+
+NSD ?= $(NAVISERVER)/bin/nsd
+TESTFLAGS ?=
+.PHONY: test
+test: all
+	NSDNS_TEST_FAMILY=4 $(NSD) -c -d -t $(CURDIR)/tests/test.nscfg $(CURDIR)/tests/all.test $(TESTFLAGS)
+	NSDNS_TEST_FAMILY=6 $(NSD) -c -d -t $(CURDIR)/tests/test.nscfg $(CURDIR)/tests/all.test $(TESTFLAGS)

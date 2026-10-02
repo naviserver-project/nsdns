@@ -1,0 +1,106 @@
+package require tcltest 2.2
+namespace import ::tcltest::*
+source [file join [file dirname [info script]] support.tcl]
+
+# Execute the same transport cases in the IPv4 and IPv6 configurations.
+foreach {type number value expected} {
+    A 1 192.0.2.10 c000020a
+    AAAA 28 2001:db8::10 20010db8000000000000000000000010
+    TXT 16 {{hello world} {} x} 0b68656c6c6f20776f726c64000178
+} {
+    test dns-tcp-1.$type {wire encoding over TCP} -constraints {nsdns transport connchan} -setup {
+        ns_dns flush
+        ns_dns add host.test $type $value 0
+    } -body {
+        ::dnsTest::tcp host.test $number
+    } -cleanup {ns_dns flush} -result [list [list $number $expected]]
+
+    test dns-resolve-1.$type {resolver UDP round trip to local server} -constraints {nsdns transport} -setup {
+        ns_dns flush
+        ns_dns add host.test $type $value 0
+    } -body {
+        lindex [::dnsTest::resolve host.test $type] 0 0 2
+    } -cleanup {ns_dns flush} -result $value
+}
+
+test dns-cname-1.1 {CNAME retains AAAA query type} -constraints {nsdns transport connchan} -setup {
+    ns_dns flush
+    ns_dns add host.test AAAA 2001:db8::10 0
+    ns_dns add alias.test CNAME host.test 0
+} -body {
+    lsort -integer [lmap record [::dnsTest::tcp alias.test 28] {lindex $record 0}]
+} -cleanup {ns_dns flush} -result {5 28}
+
+test dns-binary-1.1 {binary TXT survives wire parsing and cache cloning} -constraints {nsdns transport connchan} -setup {
+    ns_dns flush
+    ns_dns add binary.test TXT [list [binary format H* 00ff] ""] 0
+} -body {
+    list [::dnsTest::tcp binary.test 16] [binary encode hex [lindex [::dnsTest::resolve binary.test TXT] 0 0 2 0]]
+} -cleanup {ns_dns flush} -result {{{16 0200ff00}} 00ff}
+
+test dns-large-1.1 {resolver retries truncated UDP response over TCP} -constraints {nsdns transport} -setup {
+    ns_dns flush
+    set strings [list [string repeat x 255] [string repeat y 255] [string repeat z 255]]
+    ns_dns add long.test TXT $strings 0
+} -body {
+    expr {[lindex [::dnsTest::resolve long.test TXT] 0 0 2] eq $strings}
+} -cleanup {ns_dns flush} -result 1
+
+test dns-udp-1.1 {raw UDP sets TC at 512 bytes without EDNS} -constraints {nsdns transport tcludp udpFamily} -setup {
+    ns_dns flush
+    ns_dns add long.test TXT [list [string repeat x 255] [string repeat y 255] [string repeat z 255]] 0
+} -body {
+    set reply [::dnsTest::rawUdp [::dnsTest::query long.test 16]]
+    binary scan $reply S2 header
+    expr {[string length $reply] <= 512 && ([lindex $header 1] & 512) != 0}
+} -cleanup {ns_dns flush} -result 1
+
+test dns-udp-1.2 {EDNS allows a long UDP TXT response} -constraints {nsdns transport tcludp udpFamily} -setup {
+    ns_dns flush
+    ns_dns add long.test TXT [list [string repeat x 255] [string repeat y 255] [string repeat z 255]] 0
+} -body {
+    set reply [::dnsTest::rawUdp [::dnsTest::query long.test 16 1]]
+    set expected ff[string repeat 78 255]ff[string repeat 79 255]ff[string repeat 7a 255]
+    expr {[::dnsTest::answers $reply] eq [list [list 16 $expected]]}
+} -cleanup {ns_dns flush} -result 1
+
+foreach type {AAAA TXT} {
+    test dns-lookup-1.$type {configured resolver queries the Tcl upstream fixture} -constraints {nsdns fixtureProcess} -setup {
+        ::dnsTest::startFixture
+    } -body {
+        lindex [ns_dns lookup remote.test $type] 0 0 1
+    } -result $type
+}
+
+test dns-lookup-2.1 {lookup retries truncated upstream TXT over TCP} -constraints {nsdns fixtureProcess} -setup {
+    ::dnsTest::startFixture
+} -body {
+    lmap value [lindex [ns_dns lookup large.remote.test TXT] 0 0 2] {string length $value}
+} -result {255 255 255}
+
+test dns-proxy-1.1 {proxy AAAA and binary TXT are cached} -constraints {nsdns fixtureProcess connchan} -setup {
+    ns_dns flush
+    ::dnsTest::startFixture
+} -body {
+    set aaaa [::dnsTest::tcp remote.test 28]
+    set txt [::dnsTest::tcp remote.test 16]
+    # Socket response precedes cache insertion; wait a bounded time for both.
+    set deadline [expr {[clock milliseconds]+3000}]
+    while {[llength [ns_dns find remote.test]] < 2 && [clock milliseconds] < $deadline} {after 10}
+    list $aaaa $txt [lsort [lmap r [ns_dns find remote.test] {lindex $r 1}]]
+} -cleanup {ns_dns flush} -result {{{28 20010db8000000000000000000000030}} {{16 08757073747265616d000200ff}} {AAAA TXT}}
+
+test dns-proxy-1.2 {TCP proxy retries upstream truncation and caches complete TXT} -constraints {nsdns fixtureProcess connchan} -setup {
+    ns_dns flush
+    ::dnsTest::startFixture
+} -body {
+    set expected ff[string repeat 74 255]ff[string repeat 75 255]ff[string repeat 76 255]
+    set reply [::dnsTest::tcp large.remote.test 16]
+    set deadline [expr {[clock milliseconds]+3000}]
+    while {[ns_dns find large.remote.test] eq "" && [clock milliseconds] < $deadline} {after 10}
+    list [expr {$reply eq [list [list 16 $expected]]}] \
+        [lmap value [lindex [ns_dns find large.remote.test] 0 2] {string length $value}]
+} -cleanup {ns_dns flush} -result {1 {255 255 255}}
+
+::dnsTest::stopFixture
+cleanupTests

@@ -32,16 +32,124 @@ make NAVISERVER=/path/to/naviserver-with-tcl9
 make NAVISERVER=/path/to/naviserver-with-tcl9 test
 ```
 
-## IPv6 and TXT
+## Configuring
 
-The `address`, `proxyhost`, and `nameserver` settings accept IPv4 or IPv6
-addresses. Use `address` `::1` for IPv6 loopback, or `::` for the IPv6 wildcard.
-Wildcard dual-stack behavior follows NaviServer and the operating system;
-use an explicit address when only one family should be exposed.
-`A` and `AAAA` values must be numeric addresses of the matching family.
-`dns_reload` imports IPv4 hosts as `A` and IPv6 hosts as `AAAA`, and ignores
-inline comments. `PTR` records accept `ip6.arpa` names in the usual DNS form.
-`CNAME` resolution retains the original query type, including `AAAA` and `TXT`.
+For resolver-only use, add the following to the NaviServer configuration.
+`$server` is the existing virtual-server name. Use your preferred upstream
+resolver in place of `1.1.1.1`.
+
+```tcl
+#---------------------------------------------------------------------
+# nsdns nameserver support -- extra module "nsdns"
+#---------------------------------------------------------------------
+ns_section ns/server/$server/modules {
+    ns_param nsdns nsdns
+}
+ns_section ns/server/$server/module/nsdns {
+    ns_param port       0        ;# Disable the local UDP/TCP listener
+    ns_param nameserver 1.1.1.1  ;# Upstream for ns_dns lookup
+    #ns_param nameserverport 53  ;# Default upstream port; optional
+}
+```
+
+After restarting, run `ns_dns lookup openacs.org TXT` in that server's Tcl
+interpreter. `nameserver` must be configured for `lookup`; the module does
+not import `/etc/resolv.conf`. `nameserverport` defaults to 53. The local
+`port` is unrelated to outgoing lookups.
+
+To serve local records as well, replace the module configuration block with:
+
+```tcl
+ns_section ns/server/$server/module/nsdns {
+    ns_param address 127.0.0.1
+    ns_param port    5354
+    #ns_param proxyhost 1.1.1.1 ;# Optional forwarding of unanswered requests
+    #ns_param proxyport 53     ;# Default proxy destination port
+}
+```
+
+Use `address ::1` for IPv6 loopback. The `address`, `nameserver`, and
+`proxyhost` settings accept IPv4 or IPv6 addresses. Wildcard dual-stack
+behavior depends on NaviServer and the operating system.
+
+### Parameters
+
+Timeouts and TTLs below are integer seconds, not Tcl duration strings.
+
+| Parameter | Default | Description |
+| --- | --- | --- |
+| `port` | `5353` | Local UDP/TCP listening port (0..65535). Set to 0 for resolver-only use; ns_dns lookup and ns_dns resolve do not use this listener. |
+| `address` | Unset | Local listening address. Set an explicit IPv4 or IPv6 address, e.g. 127.0.0.1 or ::1 for loopback. When omitted, the socket API uses a wildcard address; wildcard dual-stack behavior depends on the platform. Ignored when port is 0. |
+| `nameserver` | Unset | Comma-separated upstream IPv4 or IPv6 addresses used by ns_dns lookup. No servers are configured by default; the module does not read /etc/resolv.conf. ns_dns resolve instead accepts an explicit -server argument. |
+| `nameserverport` | `53` | Upstream destination port (1..65535) used by ns_dns lookup. Only needed when the upstream listens on a nonstandard port. Independent of the local port and proxyport. |
+| `proxyhost` | Unset | Upstream IPv4 or IPv6 DNS server for incoming requests that cannot be answered locally. Omit to disable forwarding. Independent of nameserver; requires a nonzero local port. |
+| `proxyport` | `53` | Destination port of proxyhost. Applies to forwarding incoming DNS requests, not ns_dns lookup. |
+| `proxytimeout` | `3` | Proxy reply timeout in seconds; also used for a TCP retry after a truncated upstream response. |
+| `proxyretries` | `2` | Maximum number of UDP proxy transmission attempts, including the initial request. |
+| `ttl` | `86400` | Default record TTL in seconds. A positive value overrides the default; ns_dns add can supply a per-record TTL. |
+| `cachettl` | `0` | Minimum nonzero TTL in seconds for records inserted into the cache. Positive values raise shorter nonzero TTLs; 0 leaves them unchanged. |
+| `negativettl` | `3600` | Legacy negative-response TTL setting in seconds. Currently read by the module but not used; setting it does not enable negative caching. |
+| `readtimeout` | `30` | TCP client read timeout in seconds. |
+| `writetimeout` | `30` | TCP client write timeout in seconds. |
+| `threads` | `1` | Number of DNS request worker queues and threads (1..16). Used when the local listener is enabled. |
+| `rcvbuf` | `0` | Local UDP socket receive and send buffer size in bytes. Despite the name, sets both SO_RCVBUF and SO_SNDBUF. 0 preserves operating-system defaults. |
+| `defaulthost` | Unset | Fallback numeric address for unanswered A or AAAA queries when proxyhost is unset. Must match the requested address family. Omit to disable; does not synthesize TXT records. |
+| `debug` | `0` | DNS diagnostic verbosity. Higher values produce more detail; explicitly configuring this parameter also enables the Debug(dnsd) log severity. |
+| `flags` | `0` | Legacy behavior bit mask. Bit 4 (DNS_NAPTR_REGEXP) enables NAPTR regexp processing. Leave at 0 for ordinary DNS/TXT use. |
+
+## Usage
+
+### Add records
+
+```tcl
+ns_dns add name type value... ?ttl?
+```
+
+Adds a DNS record to the cache. The name is a domain name such as
+`www.cisco.com`. Wildcard names are supported:
+
+```tcl
+ns_dns add *.domain.com A 1.1.1.1
+```
+
+Requests for hosts under `domain.com` that are not in the local cache receive
+the wildcard record.
+
+### Supported record types
+
+`ns_dns add` supports all of the following types. Optional TTLs are in seconds.
+
+| Type | Arguments after the type | Meaning |
+| --- | --- | --- |
+| `A` | `address ?ttl?` | Numeric IPv4 address |
+| `AAAA` | `address ?ttl?` | Numeric IPv6 address |
+| `TXT` | `strings ?ttl?` | Tcl list of byte strings; see below |
+| `MX` | `preference exchange ?ttl?` | Mail exchanger and numeric preference |
+| `NS` | `nameserver ?ttl?` | Name of an authoritative nameserver |
+| `PTR` | `target ?ttl?` | Reverse lookup target; use an `in-addr.arpa` or `ip6.arpa` owner name |
+| `CNAME` | `target ?ttl?` | Alias; resolution retains the requested type, including AAAA and TXT |
+| `NAPTR` | `order preference flags service regexp ?replacement? ?ttl?` | Naming Authority Pointer, including ENUM records |
+
+SOA records can be decoded, returned by lookups, and encoded by the module,
+but cannot be created with `ns_dns add`. `ANY` is a query type, not an
+addable record type. Other legacy record-type names do not imply implemented
+record support.
+
+```tcl
+ns_dns add host.test A 192.0.2.10 3600
+ns_dns add host.test AAAA 2001:db8::10 3600
+ns_dns add alias.test CNAME host.test 3600
+ns_dns add example.test NS host.test 3600
+ns_dns add example.test MX 10 host.test 3600
+ns_dns add 10.2.0.192.in-addr.arpa PTR host.test 3600
+ns_dns add 1.2.3.4.5.6.e164.arpa NAPTR 1 100 u E2U+sip {!^.*$!sip:123456@sipproxy.net:5060!}
+```
+
+`dns_reload` imports IPv4 and IPv6 entries from `/etc/hosts` as A and AAAA
+records and ignores inline comments. Records live in memory; re-add local
+records after restarting.
+
+#### TXT values
 
 `TXT` values are lists of one or more byte strings. Each string is at most
 255 bytes; the total encoded RDATA is at most 65535 bytes. Boundaries,
@@ -62,103 +170,26 @@ The `TXT` value is always a list, even for a single string. Multiple distinct
 `TXT` records may exist at the same name; identical values are deduplicated.
 `ns_dns del name TXT` removes that name's `TXT` records and retains other types.
 
+### Query upstream servers
+
 ```tcl
-ns_dns resolve example.test -type TXT -server ::1 -port 5354
-ns_dns lookup example.test AAAA
+# Uses configured nameserver and nameserverport (default 53).
+ns_dns lookup openacs.org TXT
+
+# Selects the destination explicitly, independently of nameserver.
+ns_dns resolve chunks.test -type TXT -server ::1 -port 5354
 ```
 
 `resolve` supports `-server`, `-port` (default 53), `-type`, and `-timeout`.
-`lookup` uses the `nameserver` setting (comma-separated addresses) and optional
-`nameserverport` (default 53). Both retry truncated UDP replies over TCP.
+Both lookup commands retry truncated UDP replies over TCP. Neither uses the
+local listening port to select its upstream.
+
 Proxying supports IPv4/IPv6 upstreams and TCP clients. A truncated upstream
 reply is not cached; a TCP client's truncated upstream reply is retried over
 TCP. UDP replies respect the advertised EDNS size, or 512 bytes without
-EDNS, and set `TC` when records do not fit. TCP replies are limited to 65535
-bytes; an individual record that cannot fit is omitted with `TC` set.
-This remains a small DNS cache/server, not a full recursive resolver or
-zone-transfer implementation. Other legacy unsupported record types have
-not been implemented by this update.
-
-## Module metadata
-
-The build sets `MODNAME=nsdns`. With a current NaviServer build system,
-`Ns_ModuleGetInfo` reports name, version, Git build tag, `type=module`, and
-`ABI=1` through `ns_server modules`. Older cores without that API continue
-to load the module normally. Build from its Git checkout for a useful tag.
-
-## Configuring
-
-Here is an `nsd.tcl` excerpt for configuring the DNS module:
-
-```tcl
-ns_section      ns/server/${server}/module/nsdns
-ns_param	port		5354
-ns_param	address		localhost
-ns_param	ttl		86400
-ns_param	negativettl	3600
-ns_param	cachettl	0
-ns_param	readtimeout	30
-ns_param	writetimeout	30
-ns_param	proxytimeout	3
-ns_param	proxyretries	2
-ns_param	proxyhost	8.8.8.8
-ns_param	proxyport	53
-ns_param	defaulthost	""
-ns_param        debug           0
-```
-
-| Parameter | Description |
-| --- | --- |
-| `port` | Local UDP/TCP listening port. |
-| `address` | Local address to bind. |
-| `ttl` | Default TTL for records. |
-| `cachettl` | TTL to be used for cached records. |
-| `negativettl` | TTL to be used for negative responses. |
-| `readtimeout` | Timeout for reading. |
-| `proxyhost` | Remote DNS server where to proxy requests. |
-| `proxyport` | Port of the remote proxy server. |
-| `proxyretries` | How many times to re-send UDP request to proxy server. |
-| `proxytimeout` | How long to wait for proxy reply before timeout. |
-| `debug` | Debug level, higher level more information is written in the log. |
-| `defaulthost` | If no proxyhost set and query host not found reply with default host. |
-
-## Usage
-
-### Add records
-
-```tcl
-ns_dns add name type value... ?ttl?
-```
-
-Adds a DNS record to the cache. The name is a domain name such as
-`www.cisco.com`. Wildcard names are supported:
-
-```tcl
-ns_dns add *.domain.com A 1.1.1.1
-```
-
-Requests for hosts under `domain.com` that are not in the local cache receive
-the wildcard record.
-
-| Type | Value |
-| --- | --- |
-| `A` | Numeric IPv4 address |
-| `AAAA` | Numeric IPv6 address |
-| `TXT` | Tcl list of byte strings; see [IPv6 and TXT](#ipv6-and-txt) |
-| `MX` | Preference and canonical name |
-| `NS`, `PTR`, `CNAME` | Domain name |
-| `NAPTR` | Naming authority information (ENUM) |
-
-Examples:
-
-```tcl
-ns_dns add www.mydomain.com A 192.168.1.1
-ns_dns add ns.mydomain.com A 192.168.1.1
-ns_dns add ftp.mydomain.com CNAME www.mydomain.com
-ns_dns add mydomain.com NS ns.mydomain.com
-ns_dns add mydomain.com MX 1 ns.mydomain.com
-ns_dns add 1.2.3.4.5.6.e164.arpa NAPTR 1 100 u E2U+sip {!^.*$!sip:123456@sipproxy.net:5060!}
-```
+EDNS, and set TC when records do not fit. TCP replies are limited to 65535
+bytes; an individual record that cannot fit is omitted with TC set. This
+module is not a full recursive resolver or zone-transfer server.
 
 ### Delete records
 
@@ -236,6 +267,7 @@ Dependencies are declared with `tcltest` constraints in [tests/support.tcl](test
 | `moduleInfo` | `ns_server modules` is available |
 | `transport` | the selected loopback family can bind |
 | `ipv4`, `ipv6` | the active usable transport family |
+| `nsdProcess` | NaviServer and an executable nsd for isolated startup tests |
 | `fixtureProcess` | transport and an executable nsd for the Tcl fixture |
 | `tcludp` | optional udp package, version 1.0.5 or later |
 | `udpFamily` | `tcludp` can open the selected address family |
@@ -249,37 +281,31 @@ in the server log are not test failures.
 
 ## Manual testing
 
-Below is output from dig utility about the configuration
-provided in the above example.
+With the loopback listener configured on port 5354, add records in the
+server's Tcl interpreter:
 
-```text
-% dig @localhost  -p 5354 -t any openacs.org
-
-; <<>> DiG 9.10.3-P4 <<>> @localhost -p 5354 -t any openacs.org
-; (3 servers found)
-;; global options: +cmd
-;; Got answer:
-;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 34376
-;; flags: qr rd ra; QUERY: 1, ANSWER: 6, AUTHORITY: 0, ADDITIONAL: 1
-
-;; OPT PSEUDOSECTION:
-; EDNS: version: 0, flags:; udp: 512
-;; QUESTION SECTION:
-;openacs.org.			IN	ANY
-
-;; ANSWER SECTION:
-openacs.org.		6422	IN	NS	ns1.wu-wien.ac.at.
-openacs.org.		6422	IN	NS	ns2.wu-wien.ac.at.
-openacs.org.		6422	IN	A	137.208.116.31
-openacs.org.		6422	IN	AAAA	2001:628:404:74::31
-openacs.org.		6422	IN	MX	10 smtp.openacs.org.
-openacs.org.		6422	IN	SOA	ns0.wu-wien.ac.at. postmaster.wu-wien.ac.at. 2016041101 3600 1800 604800 3600
-
-;; Query time: 0 msec
-;; SERVER: ::1#5354(::1)
-;; WHEN: Mon Apr 25 21:43:31 CEST 2016
-;; MSG SIZE  rcvd: 205
+```tcl
+ns_dns add txt.test TXT [list "v=spf1 -all"] 3600
+ns_dns add chunks.test TXT [list "first part" "second part" ""] 3600
+ns_dns find chunks.test
+ns_dns resolve chunks.test -type TXT -server 127.0.0.1 -port 5354
 ```
+
+Then query over UDP and TCP from the shell:
+
+```sh
+dig @127.0.0.1 -p 5354 chunks.test TXT
+dig @127.0.0.1 -p 5354 chunks.test TXT +tcp
+```
+
+For an IPv6 loopback listener, substitute `::1` for `127.0.0.1`.
+
+## Module metadata
+
+The build sets `MODNAME=nsdns`. With a current NaviServer build system,
+`Ns_ModuleGetInfo` reports name, version, Git build tag, `type=module`, and
+`ABI=1` through `ns_server modules`. Older cores without that API continue
+to load the module normally. Build from its Git checkout for a useful tag.
 
 ## Authors
 

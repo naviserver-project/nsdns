@@ -196,9 +196,13 @@ NS_EXPORT Ns_ReturnCode Ns_ModuleInit(const char *server, const char *module)
         return NS_ERROR;
     }
     dnsDefaultHost = Ns_ConfigGetValue(path, "defaulthost");
-    intValue = 53;
-    (void)Ns_ConfigGetInt(path, "nameserverport", &intValue);
-    if (intValue < 1 || intValue > 65535) return NS_ERROR;
+    if (Ns_ConfigGetValue(path, "nameserverport") == NULL) {
+        intValue = 53;
+    } else if (!Ns_ConfigGetInt(path, "nameserverport", &intValue)
+               || intValue < 1 || intValue > 65535) {
+        Ns_Log(Error, "nsdns: nameserverport must be an integer in the range 1..65535");
+        return NS_ERROR;
+    }
     dnsInit("port", intValue);
     /* Resolving dns servers */
     dnsInit("nameserver", Ns_ConfigGetValue(path, "nameserver"), (char *)NULL);

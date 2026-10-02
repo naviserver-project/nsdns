@@ -170,3 +170,5 @@ proc ::dnsTest::stopFixture {} {
         ::tcltest::removeFile upstream.log
     }
 }
+
+::tcltest::testConstraint nsdProcess [expr {[info commands ns_info] ne "" && [file executable [info nameofexecutable]]}]

@@ -16,7 +16,6 @@
  *   Gustaf Neumann neumann@wu.ac.at
  *
  */
-#define USE_TCL8X
 #include "ns.h"
 #include "dns.h"
 
@@ -645,7 +644,7 @@ dnsRecord *dnsRecordCreateA(const char *name, const char *ipAddr)
 dnsRecord *dnsRecordCreateTXT(Tcl_Interp *interp, const char *name, Tcl_Obj *strings)
 {
     Tcl_Obj **values;
-    int count, i;
+    TCL_SIZE_T count, i;
     size_t size = 0, offset = 0;
     dnsRecord *rec;
 
@@ -657,8 +656,14 @@ dnsRecord *dnsRecordCreateTXT(Tcl_Interp *interp, const char *name, Tcl_Obj *str
         return NULL;
     }
     for (i = 0; i < count; i++) {
-        int length;
+        TCL_SIZE_T length;
+#ifdef NS_TCL_PRE9
         (void)Tcl_GetByteArrayFromObj(values[i], &length);
+#else
+        if (Tcl_GetBytesFromObj(interp, values[i], &length) == NULL) {
+            return NULL;
+        }
+#endif
         if (length > 255 || size + (size_t)length + 1 > 65535) {
             Tcl_SetObjResult(interp, Tcl_NewStringObj("TXT strings must be at most 255 bytes; RDATA at most 65535 bytes", -1));
             return NULL;
@@ -674,7 +679,7 @@ dnsRecord *dnsRecordCreateTXT(Tcl_Interp *interp, const char *name, Tcl_Obj *str
     rec->len = (unsigned short)size;
     rec->data.txt = ns_malloc(size);
     for (i = 0; i < count; i++) {
-        int length;
+        TCL_SIZE_T length;
         unsigned char *bytes = Tcl_GetByteArrayFromObj(values[i], &length);
         rec->data.txt[offset++] = (unsigned char)length;
         memcpy(rec->data.txt + offset, bytes, (size_t)length);

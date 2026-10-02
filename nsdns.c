@@ -69,7 +69,7 @@ static int dnsRequestFind(dnsRequest *req, dnsRecord *qlist, unsigned int depth)
 static void dnsRecordCache(dnsClient *client, dnsRecord **list);
 static ssize_t dnsWrite(int sock, void *vbuf, size_t len);
 static ssize_t dnsRead(int sock, void *vbuf, size_t len);
-static int DnsCmd(ClientData arg, Tcl_Interp *interp, int objc, Tcl_Obj *const objv[]);
+static TCL_OBJCMDPROC_T DnsCmd;
 
 static Ns_TclTraceProc DnsInterpInit;
 static Ns_SockProc DnsTcpListen;
@@ -201,7 +201,7 @@ NS_EXPORT Ns_ReturnCode Ns_ModuleInit(const char *server, const char *module)
     if (intValue < 1 || intValue > 65535) return NS_ERROR;
     dnsInit("port", intValue);
     /* Resolving dns servers */
-    dnsInit("nameserver", Ns_ConfigGetValue(path, "nameserver"), 0);
+    dnsInit("nameserver", Ns_ConfigGetValue(path, "nameserver"), (char *)NULL);
 
     /* If no port specified it will be just client dns resolver module */
     if (dnsPort > 0) {
@@ -269,10 +269,10 @@ NS_EXPORT Ns_ReturnCode Ns_ModuleInit(const char *server, const char *module)
 /*
  * Add ns_dns commands to interp.
  */
-static Ns_ReturnCode DnsInterpInit(Tcl_Interp *interp, const void *UNUSED(arg))
+static int DnsInterpInit(Tcl_Interp *interp, const void *UNUSED(arg))
 {
-    Tcl_CreateObjCommand(interp, "ns_dns", DnsCmd, NULL, NULL);
-    return NS_OK;
+    TCL_CREATEOBJCOMMAND(interp, "ns_dns", DnsCmd, NULL, NULL);
+    return TCL_OK;
 }
 
 static unsigned long GetUlong(Tcl_Obj *obj)
@@ -314,7 +314,7 @@ static short GetShort(Tcl_Obj *obj)
     return result;
 }
 
-static int DnsCmd(ClientData UNUSED(arg), Tcl_Interp *interp, int objc, Tcl_Obj *const objv[])
+static int DnsCmd(ClientData UNUSED(arg), Tcl_Interp *interp, TCL_SIZE_T objc, Tcl_Obj *const objv[])
 {
     enum commands {
         cmdAdd, cmdDel, cmdFlush, cmdList, cmdResolve, cmdQueue, cmdLookup, cmdStat, cmdFind,
@@ -330,7 +330,7 @@ static int DnsCmd(ClientData UNUSED(arg), Tcl_Interp *interp, int objc, Tcl_Obj 
     int cmd;
     struct NS_SOCKADDR_STORAGE sa;
     struct sockaddr *saPtr = (struct sockaddr *)&sa;
-    int argc = objc, argp = 2;
+    TCL_SIZE_T argc = objc, argp = 2;
     char tmp[128];
     dnsRecord *drec;
     Tcl_HashEntry *hrec;
@@ -652,7 +652,8 @@ static int DnsCmd(ClientData UNUSED(arg), Tcl_Interp *interp, int objc, Tcl_Obj 
     }
 
     case cmdResolve: {
-        int i, timeout = 0, port = 53;
+        TCL_SIZE_T i;
+        int timeout = 0, port = 53;
         dnsType_t qtype = 0;
         const char *qserver = "127.0.0.1";
         dnsPacket *reply;
@@ -716,7 +717,7 @@ static int DnsCmd(ClientData UNUSED(arg), Tcl_Interp *interp, int objc, Tcl_Obj 
 
     case cmdConfig:
         {
-            int i;
+            TCL_SIZE_T i;
 
             for (i = 2; i < objc - 1; i += 2) {
                 char *key = Tcl_GetString(objv[i]);
@@ -728,7 +729,7 @@ static int DnsCmd(ClientData UNUSED(arg), Tcl_Interp *interp, int objc, Tcl_Obj 
                     !strcmp("failuretimeout", key)) {
                     dnsInit(key, strtol(Tcl_GetString(objv[i + 1]), NULL, 10));
                 } else if (!strcmp("nameserver", key)) {
-                    dnsInit(key, Tcl_GetString(objv[i + 1]));
+                    dnsInit(key, Tcl_GetString(objv[i + 1]), (char *)NULL);
                 }
             }
             break;

@@ -23,6 +23,15 @@ The `dns_procs.tcl` file can be installed in `/usr/local/ns/modules/tcl`
 to load on startup. It imports `/etc/hosts` into the DNS cache as `A` and
 `AAAA` records, allowing the module to serve these hosts.
 
+When switching Tcl major versions, build against the corresponding NaviServer
+installation and rebuild all objects:
+
+```sh
+make clean
+make NAVISERVER=/path/to/naviserver-with-tcl9
+make NAVISERVER=/path/to/naviserver-with-tcl9 test
+```
+
 ## IPv6 and TXT
 
 The `address`, `proxyhost`, and `nameserver` settings accept IPv4 or IPv6
@@ -203,7 +212,7 @@ make
 make test
 ```
 
-The suite uses Tcl 8.6 and `tcltest` 2.2. [tests/all.test](tests/all.test) selects the `.test`
+The suite supports Tcl 8.6 and Tcl 9 with `tcltest` 2.2 or later. [tests/all.test](tests/all.test) selects the `.test`
 files; `TESTFLAGS` forwards normal `tcltest` selection options, for example:
 
 ```sh
@@ -221,6 +230,7 @@ Dependencies are declared with `tcltest` constraints in [tests/support.tcl](test
 
 | Constraint | Dependency |
 | --- | --- |
+| `tcl9` | Tcl 9 or later (byte-sequence validation) |
 | `naviserver`, `nsdns` | NaviServer commands and the loaded module |
 | `connchan` | `ns_connchan` command and the `nssock` driver |
 | `moduleInfo` | `ns_server modules` is available |

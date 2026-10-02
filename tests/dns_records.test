@@ -64,4 +64,10 @@ test dns-client-1.1 {client-specific AAAA needs no optional TTL} -constraints {n
     lindex [ns_dns clientfind 2001:db8::abcd client.test] 0 2
 } -cleanup {ns_dns clientdel 2001:db8::abcd client.test AAAA} -result 2001:db8::20
 
+test dns-txt-1.5 {Tcl 9 rejects a value that is not a byte sequence} -constraints {nsdns tcl9} -setup {
+    ns_dns flush
+} -body {
+    list [catch {ns_dns add invalid.test TXT [list "\u0100"]}] [ns_dns find invalid.test]
+} -cleanup {ns_dns flush} -result {1 {}}
+
 cleanupTests

@@ -5,6 +5,7 @@ namespace eval ::dnsTest {
     variable directory [file dirname [info script]]
     variable fixture {}
 }
+::tcltest::testConstraint tcl9 [expr {[package vcompare [info patchlevel] 9.0] >= 0}]
 ::tcltest::testConstraint naviserver [expr {[info commands ns_info] ne ""}]
 ::tcltest::testConstraint nsdns [expr {[info commands ns_dns] ne ""}]
 ::tcltest::testConstraint moduleInfo [expr {[info commands ns_server] ne "" && ![catch {ns_server modules}]}]

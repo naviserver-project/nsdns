@@ -190,6 +190,7 @@ dnsRecord *dnsRecordCreateSOA(char *name,char *mname,char *rname,
 dnsRecord *dnsRecordCreateNAPTR(char *name, short order, short preference,char *flags,
                                 char *service,char *regexp,char *replace);
 Tcl_Obj *dnsRecordCreateTclObj(Tcl_Interp *interp,dnsRecord *drec);
+Tcl_Obj *dnsRecordCreateTclObjEx(Tcl_Interp *interp, dnsRecord *drec, bool jointxt);
 void dnsRecordUpdate(dnsRecord *rec);
 dnsRecord *dnsRecordAppend(dnsRecord **list,dnsRecord *pkt);
 dnsRecord *dnsRecordInsert(dnsRecord **list,dnsRecord *pkt);
@@ -224,3 +225,12 @@ dnsPacket *dnsResolveTcp(dnsPacket *req, const char *server, unsigned short port
 dnsPacket *dnsResolveAt(char *name, dnsType_t type, const char *server, unsigned short port, int timeout, int retries);
 dnsPacket *dnsResolve(char *name, dnsType_t type, const char *server, int timeout, int retries);
 dnsPacket *dnsLookup(char *name, dnsType_t type, int *errcode);
+
+/* Detailed query status is separate from the response's DNS RCODE. */
+typedef enum {
+    DNS_QUERY_OK, DNS_QUERY_TIMEOUT, DNS_QUERY_NETWORK, DNS_QUERY_MALFORMED,
+    DNS_QUERY_MISMATCH, DNS_QUERY_TRUNCATED, DNS_QUERY_NOSERVER
+} dnsQueryStatus;
+dnsPacket *dnsLookupDetailed(char *name, dnsType_t type, const Ns_Time *timeout, dnsQueryStatus *status);
+dnsPacket *dnsResolveDetailed(char *name, dnsType_t type, const char *server, unsigned short port,
+                              const Ns_Time *timeout, dnsQueryStatus *status);

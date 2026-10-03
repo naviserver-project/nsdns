@@ -111,44 +111,108 @@ void dnsInit(const char *name, ...)
     Ns_MutexUnlock(&dnsMutex);
 }
 
-/* DNS over TCP uses a two-byte length prefix and permits partial I/O. */
-static bool dnsTcpTransfer(NS_SOCKET sock, char *data, size_t length,
-                           const Ns_Time *timeout, bool writeData)
+/*
+ * Compute the remaining wait. An explicit command timeout is one deadline
+ * shared by all attempts, upstreams and TCP transfers. Without it, retain
+ * the configured per-operation timeout.
+ */
+static bool
+DnsQueryWait(const Ns_Time *deadline, int timeout, Ns_Time *wait,
+             dnsQueryStatus *status)
+{
+    wait->sec = timeout > 0 ? timeout : 5;
+    wait->usec = 0;
+    if (deadline != NULL) {
+        Ns_Time now, remaining;
+
+        Ns_GetTime(&now);
+        if (Ns_DiffTime(deadline, &now, &remaining) <= 0) {
+            *status = DNS_QUERY_TIMEOUT;
+            return NS_FALSE;
+        }
+        if (Ns_DiffTime(&remaining, wait, NULL) < 0) *wait = remaining;
+    }
+    return NS_TRUE;
+}
+
+static bool
+DnsQueryTransfer(NS_SOCKET sock, char *data, size_t length,
+                 const Ns_Time *deadline, int timeout, bool writing,
+                 dnsQueryStatus *status)
 {
     while (length > 0) {
-        ssize_t count = writeData ? Ns_SockSend(sock, data, length, timeout)
-                                 : Ns_SockRecv(sock, data, length, timeout);
-        if (count <= 0) return NS_FALSE;
+        Ns_Time       wait;
+        Ns_ReturnCode rc;
+        ssize_t       count;
+
+        if (!DnsQueryWait(deadline, timeout, &wait, status)) return NS_FALSE;
+        rc = Ns_SockTimedWait(sock, writing ? NS_SOCK_WRITE : NS_SOCK_READ, &wait);
+        if (rc != NS_OK) {
+            *status = rc == NS_TIMEOUT ? DNS_QUERY_TIMEOUT : DNS_QUERY_NETWORK;
+            return NS_FALSE;
+        }
+        count = writing ? send(sock, data, length, 0) : recv(sock, data, length, 0);
+        if (count < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) continue;
+        if (count <= 0) {
+            *status = DNS_QUERY_NETWORK;
+            return NS_FALSE;
+        }
         data += count;
         length -= (size_t)count;
     }
     return NS_TRUE;
 }
 
-dnsPacket *dnsResolveTcp(dnsPacket *req, const char *server,
-                         unsigned short port, int timeout)
+static bool
+DnsQueryMatches(const dnsPacket *reply, const dnsPacket *req)
 {
-    Ns_Time wait = {timeout > 0 ? timeout : 5, 0};
-    NS_SOCKET sock = Ns_SockTimedConnect(server, port, &wait);
-    uint16_t length;
-    char *data = NULL;
+    return reply->id == req->id && DNS_GET_QR(reply->u)
+        && reply->qdcount == 1 && reply->qdlist != NULL
+        && reply->qdlist->type == req->qdlist->type
+        && strcasecmp(reply->qdlist->name, req->qdlist->name) == 0;
+}
+
+static dnsPacket *
+DnsQueryTcp(dnsPacket *req, const char *server, unsigned short port,
+            int timeout, const Ns_Time *deadline, dnsQueryStatus *status)
+{
+    Ns_Time    wait;
+    NS_SOCKET  sock;
+    uint16_t   length;
+    char      *data = NULL;
     dnsPacket *reply = NULL;
 
-    if (sock == NS_INVALID_SOCKET) return NULL;
+    if (!DnsQueryWait(deadline, timeout, &wait, status)) {
+        return NULL;
+    }
+    sock = Ns_SockTimedConnect(server, port, &wait);
+    if (sock == NS_INVALID_SOCKET) {
+        *status = errno == ETIMEDOUT ? DNS_QUERY_TIMEOUT : DNS_QUERY_NETWORK;
+        return NULL;
+    }
     Ns_SockSetNonBlocking(sock);
-    if (!dnsTcpTransfer(sock, req->buf.data, (size_t)req->buf.size + 2, &wait, NS_TRUE)
-        || !dnsTcpTransfer(sock, (char *)&length, sizeof(length), &wait, NS_FALSE)) goto done;
+    if (!DnsQueryTransfer(sock, req->buf.data, (size_t)req->buf.size + 2,
+                          deadline, timeout, NS_TRUE, status)
+        || !DnsQueryTransfer(sock, (char *)&length, sizeof(length),
+                             deadline, timeout, NS_FALSE, status)) goto done;
     length = ntohs(length);
-    if (length < DNS_HEADER_LEN) goto done;
+    if (length < DNS_HEADER_LEN) {
+        *status = DNS_QUERY_MALFORMED;
+        goto done;
+    }
     data = ns_malloc(length);
-    if (!dnsTcpTransfer(sock, data, length, &wait, NS_FALSE)) goto done;
+    if (!DnsQueryTransfer(sock, data, length, deadline, timeout, NS_FALSE, status)) {
+        goto done;
+    }
     reply = dnsParsePacket((unsigned char *)data, length);
-    if (reply != NULL && (reply->id != req->id || !DNS_GET_QR(reply->u)
-        || DNS_GET_TC(reply->u) || reply->qdcount != 1
-        || reply->qdlist->type != req->qdlist->type
-        || strcasecmp(reply->qdlist->name, req->qdlist->name) != 0)) {
+    if (reply == NULL) {
+        *status = DNS_QUERY_MALFORMED;
+    } else if (!DnsQueryMatches(reply, req) || DNS_GET_TC(reply->u)) {
+        *status = DNS_GET_TC(reply->u) ? DNS_QUERY_TRUNCATED : DNS_QUERY_MISMATCH;
         dnsPacketFree(reply, 0);
         reply = NULL;
+    } else {
+        *status = DNS_QUERY_OK;
     }
 done:
     ns_free(data);
@@ -156,214 +220,171 @@ done:
     return reply;
 }
 
-dnsPacket *dnsLookup(char *name, dnsType_t type, int *errcode)
+dnsPacket *
+dnsResolveTcp(dnsPacket *req, const char *server, unsigned short port, int timeout)
 {
-    char buf[DNS_BUFSIZE];
-    dnsServer *server = 0;
-    dnsPacket *req, *reply;
-    int sock = NS_INVALID_SOCKET;
+    dnsQueryStatus status;
 
-    req = dnsPacketCreateQuery(name, type);
-    dnsEncodePacket(req);
-
-    while (1) {
-        int                        timeout, retries, rc;
-        time_t                     now;
-        struct NS_SOCKADDR_STORAGE sa;
-        struct sockaddr           *saPtr = (struct sockaddr *)&sa;
-
-        now = time(0);
-        Ns_MutexLock(&dnsMutex);
-        retries = dnsResolverRetries;
-        timeout = dnsResolverTimeout;
-        if (server != 0) {
-            /* Disable only if we have more than one server */
-            if (++server->fail_count > 2 && dnsServers->next) {
-                server->fail_time = (unsigned long)now;
-                Ns_Log(Notice, "dnsLookup: %s: nameserver disabled", server->name);
-            }
-            server = server->next;
-        } else {
-            server = dnsServers;
-        }
-        while (server) {
-            if (server->fail_time > 0u
-                && (unsigned long)now - server->fail_time > dnsFailureTimeout
-                ) {
-                server->fail_count = server->fail_time = 0;
-                Ns_Log(Notice, "dnsLookup: %s: nameserver re-enabled", server->name);
-            }
-            if (server->fail_time == 0) {
-                break;
-            }
-            server = server->next;
-        }
-        Ns_MutexUnlock(&dnsMutex);
-        if (server == 0) {
-            break;
-        }
-        if (dnsDebug > 5) {
-            Ns_Log(Notice, "dnsLookup: %s: resolving %s...", server->name, name);
-        }
-
-        rc = Ns_GetSockAddr(saPtr, server->name, dnsResolverPort);
-        if (rc != TCL_OK) {
-            Ns_Log(Error, "dnsLookup: invalid server name '%s'", server->name);
-            continue;
-        }
-
-        if (sock != NS_INVALID_SOCKET) {
-            ns_close(sock);
-            sock = NS_INVALID_SOCKET;
-        }
-        if (sock == NS_INVALID_SOCKET) {
-            if ((sock = socket(saPtr->sa_family, SOCK_DGRAM, 0)) < 0) {
-                if (errcode != 0) {
-                    *errcode = errno;
-                }
-                continue;
-            }
-        }
-        if (connect(sock, saPtr, Ns_SockaddrGetSockLen(saPtr)) != 0) {
-            continue;
-        }
-        while (retries--) {
-            ssize_t len;
-
-            if (send(sock, req->buf.data + 2, req->buf.size, 0) < 0) {
-                if (dnsDebug > 3) {
-                    Ns_Log(Error, "dnsLookup: %s: sendto: %s", server->name, strerror(errno));
-                }
-                continue;
-            }
-            if (Ns_SockWait(sock, NS_SOCK_READ, timeout) != NS_OK) {
-                if (dnsDebug > 3 && errno) {
-                    Ns_Log(Error, "dnsLookup: %s: select: %s", server->name, strerror(errno));
-                }
-                continue;
-            }
-            if ((len = recv(sock, buf, DNS_BUFSIZE, 0)) <= 0) {
-                if (dnsDebug > 3) {
-                    Ns_Log(Error, "dnsLookup: %s: recvfrom: %s", server->name, strerror(errno));
-                }
-                continue;
-            }
-            if (!(reply = dnsParsePacket((unsigned char*)buf, (size_t)len))) {
-                continue;
-            }
-            /* DNS packet id should be the same */
-            if (reply->id == req->id && DNS_GET_QR(reply->u)
-                && reply->qdcount == 1 && reply->qdlist->type == req->qdlist->type
-                && strcasecmp(reply->qdlist->name, req->qdlist->name) == 0) {
-                if (DNS_GET_TC(reply->u)) {
-                    dnsPacketFree(reply, 0);
-                    reply = dnsResolveTcp(req, server->name, dnsResolverPort, timeout);
-                    if (reply == NULL) continue;
-                }
-                ns_close(sock);
-                dnsPacketFree(req, 0);
-                Ns_MutexLock(&dnsMutex);
-                server->fail_count = server->fail_time = 0;
-                Ns_MutexUnlock(&dnsMutex);
-                return reply;
-            }
-            dnsPacketFree(reply, 0);
-        }
-    }
-    dnsPacketFree(req, 0);
-    ns_close(sock);
-    if (errcode != 0) {
-        *errcode = ENOENT;
-    }
-    return 0;
+    return DnsQueryTcp(req, server, port, timeout, NULL, &status);
 }
 
-dnsPacket *dnsResolve(char *name, dnsType_t type, const char *server, int timeout, int retries)
+/* Shared UDP query engine, including validated TCP fallback. */
+static dnsPacket *
+DnsQueryAt(char *name, dnsType_t type, const char *server, unsigned short port,
+           int timeout, int retries, const Ns_Time *deadline, dnsQueryStatus *status)
+{
+    NS_SOCKET  sock;
+    char       buf[DNS_BUFSIZE];
+    dnsPacket *req, *reply = NULL;
+    struct NS_SOCKADDR_STORAGE sa;
+    struct sockaddr *saPtr = (struct sockaddr *)&sa;
+
+    *status = DNS_QUERY_NETWORK;
+    if (Ns_GetSockAddr(saPtr, server, port) != NS_OK) return NULL;
+    sock = socket(saPtr->sa_family, SOCK_DGRAM, 0);
+    if (sock == NS_INVALID_SOCKET) return NULL;
+    if (connect(sock, saPtr, Ns_SockaddrGetSockLen(saPtr)) != 0) {
+        ns_sockclose(sock);
+        return NULL;
+    }
+    Ns_SockSetNonBlocking(sock);
+    req = dnsPacketCreateQuery(name, type);
+    dnsEncodePacket(req);
+    if (retries <= 0) retries = 3;
+    while (retries-- > 0) {
+        Ns_Time wait;
+        Ns_ReturnCode rc;
+        ssize_t len;
+
+        if (!DnsQueryWait(deadline, timeout, &wait, status)) break;
+        if (send(sock, req->buf.data + 2, req->buf.size, 0) < 0) {
+            *status = DNS_QUERY_NETWORK;
+            continue;
+        }
+        rc = Ns_SockTimedWait(sock, NS_SOCK_READ, &wait);
+        if (rc != NS_OK) {
+            *status = rc == NS_TIMEOUT ? DNS_QUERY_TIMEOUT : DNS_QUERY_NETWORK;
+            continue;
+        }
+        len = recv(sock, buf, sizeof(buf), 0);
+        if (len <= 0) {
+            *status = DNS_QUERY_NETWORK;
+            continue;
+        }
+        reply = dnsParsePacket((unsigned char *)buf, (size_t)len);
+        if (reply == NULL) {
+            *status = DNS_QUERY_MALFORMED;
+            continue;
+        }
+        if (!DnsQueryMatches(reply, req)) {
+            *status = DNS_QUERY_MISMATCH;
+            dnsPacketFree(reply, 0);
+            reply = NULL;
+            continue;
+        }
+        if (DNS_GET_TC(reply->u)) {
+            dnsPacketFree(reply, 0);
+            reply = DnsQueryTcp(req, server, port, timeout, deadline, status);
+            if (reply == NULL) continue;
+        }
+        *status = DNS_QUERY_OK;
+        break;
+    }
+    dnsPacketFree(req, 0);
+    ns_sockclose(sock);
+    return reply;
+}
+
+static const Ns_Time *
+DnsQueryDeadline(const Ns_Time *timeout, Ns_Time *deadline)
+{
+    if (timeout == NULL) {
+        return NULL;
+    }
+    Ns_GetTime(deadline);
+    Ns_IncrTime(deadline, timeout->sec, timeout->usec);
+    return deadline;
+}
+
+dnsPacket *
+dnsResolveDetailed(char *name, dnsType_t type, const char *server,
+                    unsigned short port, const Ns_Time *timeout, dnsQueryStatus *status)
+{
+    Ns_Time deadline;
+
+    return DnsQueryAt(name, type, server, port, 5, 3,
+                      DnsQueryDeadline(timeout, &deadline), status);
+}
+
+dnsPacket *
+dnsResolveAt(char *name, dnsType_t type, const char *server,
+              unsigned short port, int timeout, int retries)
+{
+    dnsQueryStatus status;
+
+    return DnsQueryAt(name, type, server, port, timeout, retries, NULL, &status);
+}
+
+dnsPacket *
+dnsResolve(char *name, dnsType_t type, const char *server, int timeout, int retries)
 {
     return dnsResolveAt(name, type, server, 53, timeout, retries);
 }
 
-dnsPacket *dnsResolveAt(char *name, dnsType_t type, const char *server,
-                        unsigned short port, int timeout, int retries)
+dnsPacket *
+dnsLookupDetailed(char *name, dnsType_t type, const Ns_Time *timeoutPtr,
+                   dnsQueryStatus *status)
 {
-    int sock;
-    char buf[DNS_BUFSIZE];
-    dnsPacket *req, *reply;
-    struct NS_SOCKADDR_STORAGE sa;
-    struct sockaddr *saPtr = (struct sockaddr *)&sa;
+    dnsServer     *server = NULL;
+    Ns_Time        deadlineStorage;
+    const Ns_Time *deadline = DnsQueryDeadline(timeoutPtr, &deadlineStorage);
 
-    if (retries <= 0) {
-        retries = 3;
-    }
-    if (timeout <= 0) {
-        timeout = 5;
-    }
-    if (Ns_GetSockAddr(saPtr, server, port) != NS_OK) {
-        return NULL;
-    }
-    if ((sock = socket(saPtr->sa_family, SOCK_DGRAM, 0)) < 0) {
-        if (dnsDebug > 3) {
-            Ns_Log(Error, "dnsResolve: %s: socket: %s", name, strerror(errno));
-        }
-        return 0;
-    }
-    if (connect(sock, saPtr, Ns_SockaddrGetSockLen(saPtr)) != 0) {
-        ns_close(sock);
-        return NULL;
-    }
-    req = dnsPacketCreateQuery(name, type);
-    dnsEncodePacket(req);
-    while (retries--) {
-        ssize_t len;
+    *status = DNS_QUERY_NOSERVER;
+    while (1) {
+        int            timeout, retries;
+        unsigned short port;
+        unsigned long  now = (unsigned long)time(NULL);
+        dnsPacket     *reply;
+        Ns_Time        wait;
 
-        if (send(sock, req->buf.data + 2, req->buf.size, 0) < 0) {
-            if (dnsDebug > 3) {
-                Ns_Log(Error, "dnsResolve: %s: sendto: %s", name, strerror(errno));
+        Ns_MutexLock(&dnsMutex);
+        timeout = dnsResolverTimeout;
+        retries = dnsResolverRetries;
+        port = dnsResolverPort;
+        if (server != NULL) {
+            if (++server->fail_count > 2 && dnsServers->next != NULL) server->fail_time = now;
+            server = server->next;
+        } else {
+            server = dnsServers;
+        }
+        while (server != NULL) {
+            if (server->fail_time > 0 && now - server->fail_time > dnsFailureTimeout) {
+                server->fail_count = server->fail_time = 0;
             }
-            continue;
+            if (server->fail_time == 0) break;
+            server = server->next;
         }
-        if (dnsDebug > 3) {
-            Ns_Log(Notice, "dnsResolve: %s: %d: sending to %s, timeout=%d", name, req->id, server, timeout);
-        }
-        if (Ns_SockWait(sock, NS_SOCK_READ, timeout) != NS_OK) {
-            if (dnsDebug > 3 && errno) {
-                Ns_Log(Error, "dnsResolve: %s: select: %s", name, strerror(errno));
-            }
-            continue;
-        }
-        if ((len = recv(sock, buf, DNS_BUFSIZE, 0)) <= 0) {
-            if (dnsDebug > 3) {
-                Ns_Log(Error, "dnsResolve: %s: recvfrom: %s", name, strerror(errno));
-            }
-            continue;
-        }
-        if (dnsDebug > 3) {
-            Ns_Log(Notice, "dnsResolve: %s: received %ld bytes from server %s", name, len, server);
-        }
-        if (!(reply = dnsParsePacket((unsigned char*)buf, (size_t)len))) {
-            continue;
-        }
-        /* DNS packet id should be the same */
-        if (reply->id == req->id && DNS_GET_QR(reply->u)
-                && reply->qdcount == 1 && reply->qdlist->type == req->qdlist->type
-                && strcasecmp(reply->qdlist->name, req->qdlist->name) == 0) {
-            if (DNS_GET_TC(reply->u)) {
-                dnsPacketFree(reply, 0);
-                reply = dnsResolveTcp(req, server, port, timeout);
-                if (reply == NULL) continue;
-            }
-            dnsPacketFree(req, 0);
-            ns_close(sock);
+        Ns_MutexUnlock(&dnsMutex);
+        if (server == NULL || !DnsQueryWait(deadline, timeout, &wait, status)) break;
+        reply = DnsQueryAt(name, type, server->name, port, timeout, retries, deadline, status);
+        if (reply != NULL) {
+            Ns_MutexLock(&dnsMutex);
+            server->fail_count = server->fail_time = 0;
+            Ns_MutexUnlock(&dnsMutex);
             return reply;
         }
-        if (dnsDebug > 3) {
-            Ns_Log(Notice, "dnsResolve: %s: %d: wrong ID %d from to %s", name, req->id, reply->id, server);
-        }
-        dnsPacketFree(reply, 0);
     }
-    dnsPacketFree(req, 0);
-    ns_close(sock);
-    return 0;
+    return NULL;
+}
+
+dnsPacket *
+dnsLookup(char *name, dnsType_t type, int *errcode)
+{
+    dnsQueryStatus status;
+    dnsPacket     *reply = dnsLookupDetailed(name, type, NULL, &status);
+
+    if (errcode != NULL) *errcode = reply != NULL ? 0 : ENOENT;
+    return reply;
 }
 
 void dnsRecordDump(Tcl_DString *ds, dnsRecord *y)
@@ -441,7 +462,7 @@ void dnsRecordDump(Tcl_DString *ds, dnsRecord *y)
 void dnsRecordLog(dnsRecord *rec, int level, const char *text, ...)
 {
     Tcl_DString ds;
-    va_list ap;
+    va_list     ap;
 
     if (level > dnsDebug) {
         return;
@@ -528,6 +549,7 @@ void dnsRecordDestroy(dnsRecord **pkt)
 dnsRecord *dnsRecordCreate(dnsRecord *from)
 {
     dnsRecord *rec = ns_calloc(1, sizeof(dnsRecord));
+
     if (from != 0) {
         rec->name = ns_strcopy(from->name);
         rec->nsize = from->nsize;
@@ -643,10 +665,10 @@ dnsRecord *dnsRecordCreateA(const char *name, const char *ipAddr)
 /* A TXT value is a Tcl list of byte strings. Preserve string boundaries. */
 dnsRecord *dnsRecordCreateTXT(Tcl_Interp *interp, const char *name, Tcl_Obj *strings)
 {
-    Tcl_Obj **values;
-    TCL_SIZE_T count, i;
-    size_t size = 0, offset = 0;
-    dnsRecord *rec;
+    Tcl_Obj   **values;
+    TCL_SIZE_T  count, i;
+    size_t      size = 0, offset = 0;
+    dnsRecord  *rec;
 
     if (Tcl_ListObjGetElements(interp, strings, &count, &values) != TCL_OK) {
         return NULL;
@@ -657,6 +679,7 @@ dnsRecord *dnsRecordCreateTXT(Tcl_Interp *interp, const char *name, Tcl_Obj *str
     }
     for (i = 0; i < count; i++) {
         TCL_SIZE_T length;
+
 #ifdef NS_TCL_PRE9
         (void)Tcl_GetByteArrayFromObj(values[i], &length);
 #else
@@ -691,6 +714,7 @@ dnsRecord *dnsRecordCreateTXT(Tcl_Interp *interp, const char *name, Tcl_Obj *str
 dnsRecord *dnsRecordCreateNS(char *name, char *data)
 {
     dnsRecord *y = ns_calloc(1, sizeof(dnsRecord));
+
     y->nsize = (short)strlen(name);
     y->name = ns_malloc((size_t)y->nsize + 1u);
     strcpy(y->name, name);
@@ -707,6 +731,7 @@ dnsRecord *dnsRecordCreateNS(char *name, char *data)
 dnsRecord *dnsRecordCreateCNAME(char *name, char *data)
 {
     dnsRecord *y = ns_calloc(1, sizeof(dnsRecord));
+
     y->nsize = (short)strlen(name);
     y->name = ns_malloc((size_t)y->nsize + 1u);
     strcpy(y->name, name);
@@ -723,6 +748,7 @@ dnsRecord *dnsRecordCreateCNAME(char *name, char *data)
 dnsRecord *dnsRecordCreatePTR(char *name, char *data)
 {
     dnsRecord *y = ns_calloc(1, sizeof(dnsRecord));
+
     y->nsize = (short)strlen(name);
     y->name = ns_malloc((size_t)y->nsize + 1);
     strcpy(y->name, name);
@@ -739,6 +765,7 @@ dnsRecord *dnsRecordCreatePTR(char *name, char *data)
 dnsRecord *dnsRecordCreateMX(char *name, unsigned short preference, char *data)
 {
     dnsRecord *y = ns_calloc(1, sizeof(dnsRecord));
+
     y->nsize = (short)strlen(name);
     y->name = ns_malloc((size_t)y->nsize + 1u);
     strcpy(y->name, name);
@@ -756,6 +783,7 @@ dnsRecord *dnsRecordCreateNAPTR(char *name, short order, short preference, char 
                                 char *replace)
 {
     dnsRecord *y = ns_calloc(1, sizeof(dnsRecord));
+
     y->nsize = (short)strlen(name);
     y->name = ns_malloc((size_t)y->nsize + 1u);
     strcpy(y->name, name);
@@ -778,6 +806,7 @@ dnsRecord *dnsRecordCreateSOA(char *name, char *mname, char *rname,
                               unsigned long retry, unsigned long expire, unsigned long ttl)
 {
     dnsRecord *y = ns_calloc(1, sizeof(dnsRecord));
+
     y->nsize = (short)strlen(name);
     y->name = ns_malloc((size_t)y->nsize + 1u);
     strcpy(y->name, name);
@@ -798,25 +827,38 @@ dnsRecord *dnsRecordCreateSOA(char *name, char *mname, char *rname,
 
 Tcl_Obj *dnsRecordCreateTclObj(Tcl_Interp *interp, dnsRecord *drec)
 {
+    return dnsRecordCreateTclObjEx(interp, drec, NS_FALSE);
+}
+
+/* Joining TXT strings changes only the Tcl view, never the stored record. */
+Tcl_Obj *dnsRecordCreateTclObjEx(Tcl_Interp *interp, dnsRecord *drec, bool jointxt)
+{
     Tcl_Obj *list = Tcl_NewListObj(0, 0);
 
     while (drec) {
-        char             ipString[NS_IPADDR_SIZE];
         struct sockaddr *saPtr;
+        char             ipString[NS_IPADDR_SIZE];
         Tcl_Obj          *obj = Tcl_NewListObj(0, 0);
 
         Tcl_ListObjAppendElement(interp, obj, Tcl_NewStringObj(drec->name, -1));
         Tcl_ListObjAppendElement(interp, obj, Tcl_NewStringObj((char *) dnsTypeStr(drec->type), -1));
         switch (drec->type) {
         case DNS_TYPE_TXT: {
-            Tcl_Obj *strings = Tcl_NewListObj(0, NULL);
-            size_t offset = 0;
+            Tcl_Obj *strings = jointxt ? Tcl_NewByteArrayObj(NULL, 0) : Tcl_NewListObj(0, NULL);
+            unsigned char *bytes = jointxt ? Tcl_SetByteArrayLength(strings, drec->len) : NULL;
+            size_t offset = 0, joined = 0;
             while (offset < drec->len && drec->data.txt != NULL) {
                 int length = drec->data.txt[offset++];
-                Tcl_ListObjAppendElement(interp, strings,
-                    Tcl_NewByteArrayObj(drec->data.txt + offset, length));
+                if (jointxt) {
+                    memcpy(bytes + joined, drec->data.txt + offset, (size_t)length);
+                    joined += (size_t)length;
+                } else {
+                    Tcl_ListObjAppendElement(interp, strings,
+                        Tcl_NewByteArrayObj(drec->data.txt + offset, length));
+                }
                 offset += (size_t)length;
             }
+            if (jointxt) Tcl_SetByteArrayLength(strings, (TCL_SIZE_T)joined);
             Tcl_ListObjAppendElement(interp, obj, strings);
             break;
         }
@@ -1049,7 +1091,8 @@ int dnsRecordSearch(dnsRecord *list, dnsRecord *rec, int replace)
 int dnsParseString(dnsPacket *pkt, char **buf)
 {
     size_t len;
-    char *end = pkt->buf.data + 2 + pkt->buf.size;
+    char  *end = pkt->buf.data + 2 + pkt->buf.size;
+
     if (pkt->buf.ptr >= end) {
         return -1;
     }
@@ -1067,11 +1110,13 @@ int dnsParseString(dnsPacket *pkt, char **buf)
 short dnsParseName(dnsPacket *pkt, char **ptr, char *buf, int buflen, short pos, int level)
 {
     char *end = pkt->buf.data + 2 + pkt->buf.size;
+
     if (level > 15) {
         return -1;
     }
     while (*ptr < end) {
         unsigned int len = (unsigned char)*(*ptr)++;
+
         if (len == 0) {
             if (pos > 0 && buf[pos - 1] == '.') {
                 pos--;
@@ -1081,7 +1126,8 @@ short dnsParseName(dnsPacket *pkt, char **ptr, char *buf, int buflen, short pos,
         }
         if ((len & 0xc0u) == 0xc0u) {
             unsigned int offset;
-            char *p;
+            char        *p;
+
             if (*ptr >= end) return -1;
             offset = ((len & 0x3fu) << 8) | (unsigned char)*(*ptr)++;
             if (offset >= pkt->buf.size) return -1;
@@ -1103,7 +1149,7 @@ short dnsParseName(dnsPacket *pkt, char **ptr, char *buf, int buflen, short pos,
 dnsPacket *dnsParseHeader(void *buf, size_t size)
 {
     unsigned short p[6];
-    dnsPacket *pkt;
+    dnsPacket     *pkt;
 
     if (size < DNS_HEADER_LEN || size > 65535) {
         return NULL;
@@ -1132,14 +1178,13 @@ dnsPacket *dnsParseHeader(void *buf, size_t size)
 dnsRecord *dnsParseRecord(dnsPacket *pkt, int query)
 {
     /* int offset; */
-    uint32_t ul;
-    char *rdataEnd = NULL;
+    uint32_t        ul;
+    char          *rdataEnd = NULL;
     unsigned short us;
-    char name[256] = {'\0'};
-    dnsRecord *y;
+    char           name[256] = {'\0'};
+    dnsRecord     *y;
 
     y = ns_calloc(1, sizeof(dnsRecord));
-    /* offset = (pkt->buf.ptr - pkt->buf.data) - 2; */
 
     /*
      * Get the name of the resource
@@ -1345,7 +1390,7 @@ dnsRecord *dnsParseRecord(dnsPacket *pkt, int query)
 
 dnsPacket *dnsParsePacket(unsigned char *packet, size_t size)
 {
-    int i;
+    int        i;
     dnsPacket *pkt;
     dnsRecord *rec;
 
@@ -1436,6 +1481,7 @@ void dnsEncodeName(dnsPacket *pkt, char *name, int compress)
 void dnsEncodeHeader(dnsPacket *pkt)
 {
     uint16_t header[7];
+
     pkt->buf.size = (unsigned short)(pkt->buf.ptr - pkt->buf.data - 2);
     header[0] = htons(pkt->buf.size);
     header[1] = htons(pkt->id);
@@ -1456,6 +1502,7 @@ void dnsEncodePtr(dnsPacket *pkt, int offset)
 void dnsEncodeShort(dnsPacket *pkt, int num)
 {
     uint16_t us = htons((unsigned short) num);
+
     memcpy(pkt->buf.ptr, &us, sizeof(us));
     pkt->buf.ptr += 2;
 }
@@ -1463,6 +1510,7 @@ void dnsEncodeShort(dnsPacket *pkt, int num)
 void dnsEncodeLong(dnsPacket *pkt, unsigned long num)
 {
     uint32_t ul = htonl((uint32_t)num);
+
     memcpy(pkt->buf.ptr, &ul, sizeof(ul));
     pkt->buf.ptr += 4;
 }
@@ -1477,6 +1525,7 @@ void dnsEncodeData(dnsPacket *pkt, void *ptr, int len)
 void dnsEncodeString(dnsPacket *pkt, char *str)
 {
     size_t len = (str != 0) ? strlen(str) : 0;
+
     dnsEncodeGrow(pkt, len + 1, "string");
     *pkt->buf.ptr++ = (char)UCHAR(len);
     if (len != 0u) {
@@ -1495,6 +1544,7 @@ void dnsEncodeBegin(dnsPacket *pkt)
 void dnsEncodeEnd(dnsPacket *pkt)
 {
     uint16_t us = htons((uint16_t)(pkt->buf.ptr - pkt->buf.rec - 2));
+
     memcpy(pkt->buf.rec, &us, sizeof(us));
 }
 
@@ -1573,13 +1623,14 @@ void dnsEncodePacketLimit(dnsPacket *pkt, size_t limit)
 {
     dnsRecord *record;
     dnsRecord *sections[3] = {pkt->anlist, pkt->nslist, pkt->arlist};
-    uint16_t counts[3] = {0, 0, 0};
-    uint16_t saved[3] = {pkt->ancount, pkt->nscount, pkt->arcount};
+    uint16_t   counts[3] = {0, 0, 0};
+    uint16_t   saved[3] = {pkt->ancount, pkt->nscount, pkt->arcount};
     unsigned short flags = pkt->u;
-    int section;
+    int        section;
 
     while (pkt->nmlist != NULL) {
         dnsName *next = pkt->nmlist->next;
+
         ns_free(pkt->nmlist->name);
         ns_free(pkt->nmlist);
         pkt->nmlist = next;
@@ -1621,6 +1672,7 @@ void dnsEncodeGrow(dnsPacket *pkt, size_t size, const char *UNUSED(proc))
 {
     size_t offset = (size_t)(pkt->buf.ptr - pkt->buf.data);
     size_t roffset = pkt->buf.rec != NULL ? (size_t)(pkt->buf.rec - pkt->buf.data) : 0;
+
     if (offset + size >= pkt->buf.allocated) {
         pkt->buf.allocated = offset + size + 256;
         /* Ns_Log(Debug,"grow: %x: before: %x, %d,%d,%d",pkt,pkt->buf.data,offset,size,pkt->buf.allocated); */
@@ -1686,9 +1738,9 @@ dnsPacket *dnsPacketCreateQuery(const char *name, dnsType_t type)
 
 void dnsPacketLog(dnsPacket *pkt, int level, const char *text, ...)
 {
-    dnsRecord *y;
+    dnsRecord  *y;
     Tcl_DString ds;
-    va_list ap;
+    va_list     ap;
 
     if (level > dnsDebug) {
         return;
@@ -1774,6 +1826,7 @@ int dnsPacketInsertRecord(dnsPacket *UNUSED(pkt), dnsRecord **list, uint16_t *co
 const char *dnsTypeStr(dnsType_t type)
 {
     int i = 0;
+
     while (dnsTypes[i].name) {
       if (type == dnsTypes[i].type) {
           return dnsTypes[i].name;
@@ -1786,6 +1839,7 @@ const char *dnsTypeStr(dnsType_t type)
 dnsType_t dnsType(const char *name)
 {
     int i = 0;
+
     while (dnsTypes[i].name) {
       if (!strcasecmp(name, dnsTypes[i].name)) {
           return dnsTypes[i].type;

@@ -170,17 +170,79 @@ The `TXT` value is always a list, even for a single string. Multiple distinct
 `TXT` records may exist at the same name; identical values are deduplicated.
 `ns_dns del name TXT` removes that name's `TXT` records and retains other types.
 
+For protocols such as SPF, `lookup` and `resolve` accept `-jointxt` to return
+each TXT value as one byte string instead of a list of strings. Concatenation
+inserts no separators and applies independently to each record in all three
+response sections. Separate TXT records remain separate, and other record
+types are unchanged. Embedded zero and non-ASCII bytes are preserved.
+This works with both the legacy list result and `-details` dictionaries.
+The default retains string boundaries, as required by protocols such as DNS-SD;
+stored records and `ns_dns find` output are not changed by a joined lookup.
+
+```tcl
+ns_dns lookup -jointxt example.org TXT
+ns_dns resolve -details -jointxt -type TXT -server 1.1.1.1 example.org
+# A TXT value {{v=spf1 include:_spf.example.org} { -all}} becomes:
+# {v=spf1 include:_spf.example.org -all}
+```
+
 ### Query upstream servers
 
 ```tcl
 # Uses configured nameserver and nameserverport (default 53).
 ns_dns lookup openacs.org TXT
 
+# Detailed response and a total network deadline.
+ns_dns lookup -details -timeout 2s openacs.org TXT
+
 # Selects the destination explicitly, independently of nameserver.
 ns_dns resolve chunks.test -type TXT -server ::1 -port 5354
+
+# Preferred option-first syntax (Ns_ParseObjv).
+ns_dns resolve -details -type TXT -server ::1 -port 5354 -timeout 2s chunks.test
+
+# General DNS names can begin with a hyphen; use the option terminator.
+ns_dns lookup -details -- -example.test TXT
 ```
 
-`resolve` supports `-server`, `-port` (default 53), `-type`, and `-timeout`.
+Both commands use `Ns_ParseObjv`, accept `-details`, `-jointxt`, `-timeout`, and `--`,
+and place options before the name. `lookup` retains its optional positional
+record type. `resolve` also supports `-server`, `-port` (default 53), and `-type`;
+its existing hostname-first option syntax remains supported.
+
+Without `-details`, results retain the three-element list of answer, authority,
+and additional sections, and network/query failures retain the empty result.
+With `-details`, the result is a dictionary with `rcode` (numeric DNS response
+code, including the EDNS extension when present), `answer`, `authority`,
+`additional`, and boolean `truncated`. Record representations are unchanged.
+For example, an NXDOMAIN response has `rcode 3`; SERVFAIL has `rcode 2`.
+These are completed DNS responses, not Tcl errors. NOERROR is `rcode 0`;
+an empty answer alone does not establish that the name is nonexistent.
+
+Detailed queries that cannot obtain a usable response raise Tcl errors:
+
+| Error code | Meaning |
+| --- | --- |
+| `NS_TIMEOUT` | Network wait or total deadline expired |
+| `NSDNS NETWORK` | Address resolution, connection, or socket I/O failed |
+| `NSDNS PROTOCOL MALFORMED` | DNS response could not be decoded |
+| `NSDNS PROTOCOL MISMATCH` | Response did not match the query |
+| `NSDNS PROTOCOL TRUNCATED` | TCP response was still truncated |
+| `NSDNS CONFIG NO_NAMESERVER` | No configured upstream is available |
+
+Use `try ... trap NS_TIMEOUT ... trap {NSDNS PROTOCOL} ... trap NSDNS ...`
+to handle these categories. When attempts fail differently, the final failure
+determines the reported error.
+
+`-timeout` accepts NaviServer time values such as `100ms`, `2s`, or `0.5`.
+For option-first calls and detailed calls, it bounds network waits across
+retries, upstreams, and UDP-to-TCP fallback together. Zero expires immediately.
+Use numeric upstream addresses for predictable timing: system resolution of
+an upstream hostname is outside the socket-wait deadline mechanism.
+Without an explicit timeout, configured/default per-operation waits apply.
+For compatibility, hostname-first `resolve` calls without `-details` retain
+their historical integer-second, per-attempt timeout (zero uses the default).
+
 Both lookup commands retry truncated UDP replies over TCP. Neither uses the
 local listening port to select its upstream.
 

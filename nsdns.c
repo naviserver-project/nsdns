@@ -655,66 +655,146 @@ static int DnsCmd(ClientData UNUSED(arg), Tcl_Interp *interp, TCL_SIZE_T objc, T
         break;
     }
 
-    case cmdResolve: {
-        TCL_SIZE_T i;
-        int timeout = 0, port = 53;
-        dnsType_t qtype = 0;
-        const char *qserver = "127.0.0.1";
-        dnsPacket *reply;
+    case cmdResolve:
+    case cmdLookup: {
+        int             details = 0, jointxt = 0, port = 53;
+        char           *name = NULL, *type = NULL;
+        const char     *server = "127.0.0.1";
+        Ns_Time        *timeout = NULL;
+        dnsType_t       qtype = 0;
+        dnsPacket      *reply;
+        dnsQueryStatus status;
+        Tcl_Obj      **normalized = NULL;
+        Tcl_Obj *const *queryv = objv;
+        bool            legacy = cmd == cmdResolve && objc > 3 && Tcl_GetString(objv[2])[0] != '-';
+        Ns_ObjvSpec lookupOpts[] = {
+            {"-details", Ns_ObjvBool, &details, INT2PTR(NS_TRUE)},
+            {"-jointxt", Ns_ObjvBool, &jointxt, INT2PTR(NS_TRUE)},
+            {"-timeout", Ns_ObjvTime, &timeout, NULL},
+            {"--", Ns_ObjvBreak, NULL, NULL},
+            {NULL, NULL, NULL, NULL}
+        };
+        Ns_ObjvSpec resolveOpts[] = {
+            {"-details", Ns_ObjvBool, &details, INT2PTR(NS_TRUE)},
+            {"-jointxt", Ns_ObjvBool, &jointxt, INT2PTR(NS_TRUE)},
+            {"-timeout", Ns_ObjvTime, &timeout, NULL},
+            {"-type", Ns_ObjvString, &type, NULL},
+            {"-server", Ns_ObjvString, &server, NULL},
+            {"-port", Ns_ObjvInt, &port, NULL},
+            {"--", Ns_ObjvBreak, NULL, NULL},
+            {NULL, NULL, NULL, NULL}
+        };
+        Ns_ObjvSpec lookupArgs[] = {
+            {"name", Ns_ObjvString, &name, NULL},
+            {"?type", Ns_ObjvString, &type, NULL},
+            {NULL, NULL, NULL, NULL}
+        };
+        Ns_ObjvSpec resolveArgs[] = {
+            {"name", Ns_ObjvString, &name, NULL},
+            {NULL, NULL, NULL, NULL}
+        };
+        Ns_ReturnCode parsed;
 
-        if (objc < 3 || (objc % 2) == 0) {
-            Tcl_WrongNumArgs(interp, 1, objv, "hostname ?-type type? ?-server server? ?-port port? ?-timeout timeout?");
+        /* Retain hostname-first resolve calls; all validation stays in
+         * Ns_ParseObjv. Only move the positional hostname after the options. */
+        if (legacy) {
+            TCL_SIZE_T i;
+
+            normalized = ns_malloc((size_t)objc * sizeof(Tcl_Obj *));
+            normalized[0] = objv[0];
+            normalized[1] = objv[1];
+            for (i = 3; i < objc; i++) {
+                normalized[i - 1] = objv[i];
+            }
+            normalized[objc - 1] = objv[2];
+            queryv = normalized;
+        }
+        parsed = Ns_ParseObjv(cmd == cmdLookup ? lookupOpts : resolveOpts,
+                              cmd == cmdLookup ? lookupArgs : resolveArgs,
+                              interp, 2, objc, queryv);
+        ns_free(normalized);
+        if (parsed != NS_OK) {
+            return TCL_ERROR;
+
+        } else if (port < 1 || port > 65535) {
+            Tcl_SetObjResult(interp, Tcl_NewStringObj("port must be 1..65535", -1));
+            return TCL_ERROR;
+
+        } else if (timeout != NULL && (!legacy || details)
+            && (timeout->sec < 0 || timeout->usec < 0)) {
+            Tcl_SetObjResult(interp, Tcl_NewStringObj("timeout must be nonnegative", -1));
             return TCL_ERROR;
         }
-        for (i = 3; i < objc - 1; i += 2) {
-            if (!strcmp("-server", Tcl_GetString(objv[i]))) {
-                qserver = Tcl_GetString(objv[i + 1]);
-            } else
-            if (!strcmp("-type", Tcl_GetString(objv[i]))) {
-                qtype = dnsType(Tcl_GetString(objv[i + 1]));
-            } else
-            if (!strcmp("-timeout", Tcl_GetString(objv[i]))) {
-                if (Tcl_GetIntFromObj(interp, objv[i + 1], &timeout) != TCL_OK) return TCL_ERROR;
-            } else if (!strcmp("-port", Tcl_GetString(objv[i]))) {
-                if (Tcl_GetIntFromObj(interp, objv[i + 1], &port) != TCL_OK) return TCL_ERROR;
-                if (port < 1 || port > 65535) {
-                    Tcl_SetObjResult(interp, Tcl_NewStringObj("port must be 1..65535", -1));
-                    return TCL_ERROR;
-                }
-            } else {
-                Tcl_SetObjResult(interp, Tcl_NewStringObj("unknown resolver option", -1));
+
+        if (type != NULL) {
+            qtype = dnsType(type);
+        }
+        if (cmd == cmdLookup) {
+            reply = dnsLookupDetailed(name, qtype, timeout, &status);
+
+        } else if (legacy && !details && timeout != NULL) {
+            /* Historical resolve timeouts were integer seconds per attempt. */
+            if (timeout->sec > INT_MAX || timeout->sec < INT_MIN) {
+                Tcl_SetObjResult(interp, Tcl_NewStringObj("legacy resolve timeout out of range", -1));
                 return TCL_ERROR;
             }
+            reply = dnsResolveAt(name, qtype, server, (unsigned short)port, (int)timeout->sec, 3);
+            status = DNS_QUERY_NETWORK; /* Legacy failure still returns empty. */
+        } else {
+            reply = dnsResolveDetailed(name, qtype, server, (unsigned short)port, timeout, &status);
         }
-        if ((reply = dnsResolveAt(Tcl_GetString(objv[2]), qtype, qserver, (unsigned short)port, timeout, 3))) {
-            Tcl_Obj *list = Tcl_NewListObj(0, 0);
-            Tcl_ListObjAppendElement(interp, list, dnsRecordCreateTclObj(interp, reply->anlist));
-            Tcl_ListObjAppendElement(interp, list, dnsRecordCreateTclObj(interp, reply->nslist));
-            Tcl_ListObjAppendElement(interp, list, dnsRecordCreateTclObj(interp, reply->arlist));
-            Tcl_SetObjResult(interp, list);
+
+        if (reply != NULL) {
+            Tcl_Obj    *result = details ? Tcl_NewDictObj() : Tcl_NewListObj(0, NULL);
+            dnsRecord  *sections[] = {reply->anlist, reply->nslist, reply->arlist};
+            const char *keys[] = {"answer", "authority", "additional"};
+
+            if (details) {
+                unsigned int rcode = DNS_GET_RCODE(reply->u);
+                dnsRecord   *record;
+
+                for (record = reply->arlist; record != NULL; record = record->next) {
+                    if (record->type == DNS_TYPE_OPT) rcode |= ((record->ttl >> 24) & 255u) << 4;
+                }
+                Tcl_DictObjPut(interp, result, Tcl_NewStringObj("rcode", -1), Tcl_NewIntObj((int)rcode));
+                Tcl_DictObjPut(interp, result, Tcl_NewStringObj("truncated", -1), Tcl_NewBooleanObj(DNS_GET_TC(reply->u) != 0));
+            }
+            for (size_t i = 0; i < 3; i++) {
+                Tcl_Obj *records = dnsRecordCreateTclObjEx(interp, sections[i], jointxt != 0);
+
+                if (details) Tcl_DictObjPut(interp, result, Tcl_NewStringObj(keys[i], -1), records);
+                else Tcl_ListObjAppendElement(interp, result, records);
+            }
+            Tcl_SetObjResult(interp, result);
             dnsPacketFree(reply, 0);
-        }
-        break;
-    }
 
-    case cmdLookup:{
-        dnsType_t qtype = 0;
-        dnsPacket *reply;
+        } else if (details) {
+            const char *message = "DNS network operation failed";
 
-        if (objc < 3) {
-            Tcl_WrongNumArgs(interp, 1, objv, "hostname ?type?");
+            switch (status) {
+            case DNS_QUERY_TIMEOUT:
+                Tcl_SetErrorCode(interp, "NS_TIMEOUT", NS_SENTINEL);
+                message = "DNS query timed out";
+                break;
+            case DNS_QUERY_MALFORMED:
+            case DNS_QUERY_MISMATCH:
+            case DNS_QUERY_TRUNCATED:
+                Tcl_SetErrorCode(interp, "NSDNS", "PROTOCOL",
+                                 status == DNS_QUERY_MALFORMED ? "MALFORMED" :
+                                 status == DNS_QUERY_MISMATCH ? "MISMATCH" : "TRUNCATED", NS_SENTINEL);
+                message = "DNS response was malformed, mismatched or truncated";
+                break;
+            case DNS_QUERY_NOSERVER:
+                Tcl_SetErrorCode(interp, "NSDNS", "CONFIG", "NO_NAMESERVER", NS_SENTINEL);
+                message = "No DNS nameserver is configured or available";
+                break;
+            case DNS_QUERY_OK:
+            case DNS_QUERY_NETWORK:
+                Tcl_SetErrorCode(interp, "NSDNS", "NETWORK", NS_SENTINEL);
+                break;
+            }
+            Tcl_SetObjResult(interp, Tcl_NewStringObj(message, -1));
             return TCL_ERROR;
-        }
-        if (objc > 3) {
-            qtype = dnsType(Tcl_GetString(objv[3]));
-        }
-        if ((reply = dnsLookup(Tcl_GetString(objv[2]), qtype, 0))) {
-            Tcl_Obj *list = Tcl_NewListObj(0, 0);
-            Tcl_ListObjAppendElement(interp, list, dnsRecordCreateTclObj(interp, reply->anlist));
-            Tcl_ListObjAppendElement(interp, list, dnsRecordCreateTclObj(interp, reply->nslist));
-            Tcl_ListObjAppendElement(interp, list, dnsRecordCreateTclObj(interp, reply->arlist));
-            Tcl_SetObjResult(interp, list);
-            dnsPacketFree(reply, 0);
         }
         break;
     }

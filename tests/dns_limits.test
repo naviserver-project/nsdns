@@ -1,0 +1,155 @@
+package require tcltest 2.2
+namespace import ::tcltest::*
+source [file join [file dirname [info script]] support.tcl]
+
+# No upstream is running for the timeout and admission tests.
+::dnsTest::stopFixture
+foreach {type number} {CNAME 5 NS 2} {
+    test dns-limits-crash-$type {timeout never caches a question; a repeated lookup remains safe} -constraints {nsdns transport connchan} -setup {
+        ns_dns flush
+    } -body {
+        set rcodes {}
+        foreach qtype [list $number 1 $number] {
+            set reply [::dnsTest::tcpWire [::dnsTest::query timeout.test $qtype]]
+            binary scan $reply S2 header
+            lappend rcodes [expr {[lindex $header 1] & 15}]
+        }
+        list $rcodes [ns_dns find timeout.test] [dict get [ns_dns stat] cacherecords]
+    } -cleanup {ns_dns flush} -result {{2 2 2} {} 0}
+}
+
+test dns-limits-tcp-1 {idle connections are bounded and rejected capacity recovers} -constraints {nsdns transport connchan} -setup {
+    set channels {}
+    set before [dict get [ns_dns stat] tcprejected]
+} -body {
+    for {set i 0} {$i < 4} {incr i} {lappend channels [::dnsTest::openTcp]}
+    ::dnsTest::waitFor {expr {[dict get [ns_dns stat] tcpactive] == 4}}
+    set extra [::dnsTest::openTcp]
+    lappend channels $extra
+    ::dnsTest::waitFor {dict get [nsv_get dnsLimit $extra] closed}
+    set stat [ns_dns stat]
+    list [dict get $stat tcpactive] [expr {[dict get $stat tcprejected] > $before}]
+} -cleanup {::dnsTest::closeTcp $channels} -result {4 1}
+
+test dns-limits-tcp-2 {prefix and trickled body share one read deadline} -constraints {nsdns transport connchan} -setup {
+    set channel [::dnsTest::openTcp]
+} -body {
+    set start [clock milliseconds]
+    # Finish the prefix late, then send data frequently enough to defeat an idle timeout.
+    ns_connchan write $channel \x01
+    after 600
+    ns_connchan write $channel \x00
+    while {![dict get [nsv_get dnsLimit $channel] closed] && [clock milliseconds]-$start < 2600} {
+        catch {ns_connchan write $channel x}
+        after 150
+    }
+    set elapsed [expr {[clock milliseconds]-$start}]
+    list [dict get [nsv_get dnsLimit $channel] closed] [expr {$elapsed >= 1200 && $elapsed < 2200}]
+} -cleanup {::dnsTest::closeTcp [list $channel]} -result {1 1}
+
+test dns-limits-proxy-1 {pending TCP sockets remain counted and excess work gets SERVFAIL} -constraints {nsdns transport connchan} -setup {
+    set channels {}
+    ns_dns flush
+    set before [dict get [ns_dns stat] proxyrejected]
+} -body {
+    for {set i 0} {$i < 2} {incr i} {
+        set channel [::dnsTest::openTcp]
+        lappend channels $channel
+        set wire [::dnsTest::query pending$i.test 1]
+        ns_connchan write $channel [binary format S [string length $wire]]$wire
+    }
+    ::dnsTest::waitFor {expr {[dict get [ns_dns stat] pending] == 2}}
+    set active [dict get [ns_dns stat] tcpactive]
+    set reply [::dnsTest::tcpWire [::dnsTest::query excess.test 1]]
+    binary scan $reply S2 header
+    list $active [expr {[lindex $header 1] & 15}] \
+        [expr {[dict get [ns_dns stat] proxyrejected] > $before}]
+} -cleanup {::dnsTest::closeTcp $channels; ns_dns flush} -result {2 2 1}
+
+test dns-limits-udp-1 {UDP and proxy queues and retained freelists stay bounded under a burst} -constraints {nsdns transport udpSend} -setup {
+    ns_dns flush
+    set before [dict get [ns_dns stat] proxyrejected]
+} -body {
+    set wire [::dnsTest::query burst.test 1]
+    for {set i 0} {$i < 300} {incr i} {
+        ::dnsTest::sendUdp $wire
+    }
+    set stat [ns_dns stat]
+    set bounded [expr {[dict get $stat maxsize0] <= 4 && [dict get $stat pending] <= 2}]
+    ::dnsTest::waitFor {expr {[dict get [ns_dns stat] pending] == 0 && [dict get [ns_dns stat] total] == 0}}
+    list $bounded [expr {[dict get [ns_dns stat] free0] <= 2}] \
+        [expr {[dict get [ns_dns stat] proxyrejected] > $before}]
+} -cleanup {ns_dns flush} -result {1 1 1}
+
+test dns-limits-cache-1 {unique names cannot exceed the learned-record budget; local records survive} -constraints {nsdns fixtureProcess connchan} -setup {
+    ns_dns flush
+    ns_dns add local.test A 192.0.2.10 0
+    ::dnsTest::startFixture
+} -body {
+    set answers 0
+    for {set i 0} {$i < 12} {incr i} {
+        if {[::dnsTest::tcp $i.budget.test 1] eq {{1 c0000228}}} {incr answers}
+    }
+    ::dnsTest::waitFor {expr {[dict get [ns_dns stat] tcpactive] == 0}}
+    list $answers [dict get [ns_dns stat] cacherecords] [::dnsTest::tcp local.test 1]
+} -cleanup {ns_dns flush} -result {12 8 {{1 c000020a}}}
+
+test dns-limits-cache-2 {large TXT records are bounded by bytes before the record-count limit} -constraints {nsdns fixtureProcess connchan} -setup {
+    ns_dns flush
+    ::dnsTest::startFixture
+} -body {
+    for {set i 0} {$i < 8} {incr i} {::dnsTest::tcp $i.bytes.test 16}
+    ::dnsTest::waitFor {expr {[dict get [ns_dns stat] tcpactive] == 0}}
+    set stat [ns_dns stat]
+    list [expr {[dict get $stat cachebytes] <= 8192}] \
+        [expr {[dict get $stat cacherecords] > 0 && [dict get $stat cacherecords] < 8}]
+} -cleanup {ns_dns flush} -result {1 1}
+
+test dns-limits-cache-3 {unvisited learned records expire without another lookup} -constraints {nsdns fixtureProcess connchan} -setup {
+    ns_dns flush
+    ::dnsTest::startFixture
+} -body {
+    ::dnsTest::tcp expire.test 16
+    ::dnsTest::waitFor {expr {[dict get [ns_dns stat] cacherecords] == 1}}
+    ::dnsTest::waitFor {expr {[dict get [ns_dns stat] cacherecords] == 0}}
+    list [ns_dns find expire.test] [dict get [ns_dns stat] cachebytes]
+} -cleanup {ns_dns flush} -result {{} 0}
+
+test dns-limits-cache-4 {delete, flush and local promotion release learned accounting} -constraints {nsdns fixtureProcess connchan} -setup {
+    ns_dns flush
+    ::dnsTest::startFixture
+} -body {
+    ::dnsTest::tcp pin.budget.test 1
+    ::dnsTest::waitFor {expr {[dict get [ns_dns stat] cacherecords] == 1}}
+    ns_dns add pin.budget.test A 192.0.2.40 0
+    set pinned [dict get [ns_dns stat] cacherecords]
+    ::dnsTest::tcp delete.budget.test 1
+    ::dnsTest::waitFor {expr {[dict get [ns_dns stat] cacherecords] == 1}}
+    ns_dns del delete.budget.test A
+    set deleted [dict get [ns_dns stat] cachebytes]
+    ::dnsTest::tcp flush.budget.test 1
+    ::dnsTest::waitFor {expr {[dict get [ns_dns stat] cacherecords] == 1}}
+    ns_dns flush
+    list $pinned $deleted [dict get [ns_dns stat] cacherecords] [dict get [ns_dns stat] cachebytes]
+} -cleanup {ns_dns flush} -result {0 0 0 0}
+
+test dns-limits-cache-5 {the budget counts individual records, not just owner names} -constraints {nsdns fixtureProcess connchan} -setup {
+    ns_dns flush
+    ::dnsTest::startFixture
+} -body {
+    set answer [::dnsTest::tcp many.test 16]
+    ::dnsTest::waitFor {expr {[dict get [ns_dns stat] tcpactive] == 0}}
+    list [llength $answer] [dict get [ns_dns stat] cacherecords] [llength [ns_dns find many.test]]
+} -cleanup {ns_dns flush} -result {12 8 8}
+
+foreach args {{1 2 s SIP+D2U !pattern!} {1 2 s SIP+D2U {} sip.test 0}} {
+    test dns-limits-naptr-$args {optional local NAPTR regexp and replacement remain supported} -constraints nsdns -setup {
+        ns_dns flush
+    } -body {
+        ns_dns add naptr.test NAPTR {*}$args
+        llength [ns_dns find naptr.test]
+    } -cleanup {ns_dns flush} -result 1
+}
+
+::dnsTest::stopFixture
+cleanupTests

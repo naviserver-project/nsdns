@@ -1,13 +1,13 @@
 # DNS Module for NaviServer
 
-Release **0.9.0**
+Release **0.10.0**
 
 This NaviServer module implements a DNS server and proxy. It serves records
 from an in-memory cache or forwards requests to another DNS server and caches
 the results. Commands add and remove records from the cache; no external
 database is required.
 
-Version 0.9.0 completes IPv6 transport and AAAA record handling, adds TXT
+Version 0.10.0 completes IPv6 transport and AAAA record handling, adds TXT
 records, and reports build metadata through `ns_server modules` on cores
 providing the module-information API.
 
@@ -74,7 +74,13 @@ behavior depends on NaviServer and the operating system.
 
 ### Parameters
 
-Timeouts and TTLs below are integer seconds, not Tcl duration strings.
+Timeouts accept NaviServer durations such as `250ms`, `1.5s`, or bare seconds,
+from zero through 2147483647 seconds. TTLs remain integer seconds. Integer configuration uses `Ns_ConfigIntRange`:
+missing or malformed values use the default; values outside the range are
+clamped to the nearest bound with a warning. Ports are limited to 0..65535
+for the listener and 1..65535 for upstreams; threads to 1..16; the default
+record TTL to 1..2147483647. Proxy attempts are limited to 0..65535 by the request counter. Other integer
+settings use 0..2147483647.
 
 | Parameter | Default | Description |
 | --- | --- | --- |
@@ -84,13 +90,13 @@ Timeouts and TTLs below are integer seconds, not Tcl duration strings.
 | `nameserverport` | `53` | Upstream destination port (1..65535) used by ns_dns lookup. Only needed when the upstream listens on a nonstandard port. Independent of the local port and proxyport. |
 | `proxyhost` | Unset | Upstream IPv4 or IPv6 DNS server for incoming requests that cannot be answered locally. Omit to disable forwarding. Independent of nameserver; requires a nonzero local port. |
 | `proxyport` | `53` | Destination port of proxyhost. Applies to forwarding incoming DNS requests, not ns_dns lookup. |
-| `proxytimeout` | `3` | Proxy reply timeout in seconds; also used for a TCP retry after a truncated upstream response. |
+| `proxytimeout` | `3s` | Proxy reply timeout in seconds; also used for a TCP retry after a truncated upstream response. |
 | `proxyretries` | `2` | Maximum number of UDP proxy transmission attempts, including the initial request. |
 | `ttl` | `86400` | Default record TTL in seconds. A positive value overrides the default; ns_dns add can supply a per-record TTL. |
 | `cachettl` | `0` | Minimum nonzero TTL in seconds for records inserted into the cache. Positive values raise shorter nonzero TTLs; 0 leaves them unchanged. |
 | `negativettl` | `3600` | Legacy negative-response TTL setting in seconds. Currently read by the module but not used; setting it does not enable negative caching. |
-| `readtimeout` | `30` | TCP client read timeout in seconds. |
-| `writetimeout` | `30` | TCP client write timeout in seconds. |
+| `readtimeout` | `30s` | TCP client read timeout in seconds. |
+| `writetimeout` | `30s` | TCP client write timeout in seconds. |
 | `threads` | `1` | Number of DNS request worker queues and threads (1..16). Used when the local listener is enabled. |
 | `rcvbuf` | `0` | Local UDP socket receive and send buffer size in bytes. Despite the name, sets both SO_RCVBUF and SO_SNDBUF. 0 preserves operating-system defaults. |
 | `defaulthost` | Unset | Fallback numeric address for unanswered A or AAAA queries when proxyhost is unset. Must match the requested address family. Omit to disable; does not synthesize TXT records. |
@@ -241,7 +247,13 @@ Use numeric upstream addresses for predictable timing: system resolution of
 an upstream hostname is outside the socket-wait deadline mechanism.
 Without an explicit timeout, configured/default per-operation waits apply.
 For compatibility, hostname-first `resolve` calls without `-details` retain
-their historical integer-second, per-attempt timeout (zero uses the default).
+their per-attempt timeout (zero uses the 5-second default), now preserving
+fractional seconds. Negative or out-of-range timeouts are rejected in all forms.
+
+`ns_dns config timeout 250ms failuretimeout 30s` sets the lookup per-operation
+wait (default `5s`) and failed-upstream cooldown (default `300s`). Both use
+the same duration syntax and range. Zero requests an immediate per-operation
+wait or no cooldown, respectively.
 
 Both lookup commands retry truncated UDP replies over TCP. Neither uses the
 local listening port to select its upstream.

@@ -1,0 +1,46 @@
+package require tcltest 2.2
+namespace import ::tcltest::*
+source [file join [file dirname [info script]] support.tcl]
+
+foreach {port expected} {
+    omitted {0 1}
+    53      {0 1}
+    0       {0 1}
+    65536   {0 1}
+    invalid {0 1}
+} {
+    test dns-config-1.$port {resolver-only startup defaults and validates nameserverport} -constraints nsdProcess -setup {
+        set home [makeDirectory dns-config]
+        set config [file join $home config.tcl]
+        set script [file join $home startup.tcl]
+        set installation [file dirname [file dirname [info nameofexecutable]]]
+        set module [file join [file dirname $::dnsTest::directory] nsdns.so]
+        set out [open $config w]
+        puts $out [list ns_section ns/parameters]
+        foreach {key value} [list home $home logdir $home pidfile $home/nsd.pid tcllibrary $installation/tcl] {
+            puts $out [list ns_param $key $value]
+        }
+        puts $out {ns_section ns/servers {ns_param test test}}
+        puts $out [list ns_section ns/server/test/tcl [list ns_param initfile $installation/bin/init.tcl]]
+        puts $out [list ns_section ns/server/test/modules [list ns_param nsdns $module]]
+        puts $out {ns_section ns/server/test/module/nsdns {ns_param port 0}}
+        if {$port ne "omitted"} {puts $out [list ns_param nameserverport $port]}
+        close $out
+        set out [open $script w]
+        puts $out {puts "NSDNS_STARTUP_OK [expr {[info commands ns_dns] ne {}}]"}
+        puts $out {ns_shutdown; vwait forever}
+        close $out
+    } -body {
+        set failed [catch {exec [info nameofexecutable] -c -d -t $config $script 2>@1} output]
+        set message "NSDNS_STARTUP_OK 1"
+        if {$port eq "0"} {
+            set message "nameserverport value=0 below minimum, reset to 1"
+        } elseif {$port eq "65536"} {
+            set message "nameserverport value=65536 above maximum, reset to 65535"
+        }
+        list $failed [expr {[string first $message $output] >= 0}]
+    } -cleanup {
+        removeDirectory dns-config
+    } -result $expected
+}
+cleanupTests

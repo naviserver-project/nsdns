@@ -5,7 +5,7 @@ source [file join [file dirname [info script]] support.tcl]
 test dns-metadata-1.1 {module introspection reports build and ABI metadata} -constraints {nsdns moduleInfo} -body {
     set info [dict get [ns_server modules] nsdns]
     list [dict get $info name] [dict get $info version] [dict get $info type] [dict get $info abi] [expr {[dict get $info tag] ne ""}]
-} -result {nsdns 0.9.0 module 1 1}
+} -result {nsdns 0.10.0 module 1 1}
 
 test dns-hosts-1.1 {hosts import supports IPv6, aliases, and inline comments} -constraints nsdns -setup {
     source [file join [file dirname [info script]] .. dns_procs.tcl]

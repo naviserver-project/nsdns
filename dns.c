@@ -25,7 +25,7 @@ typedef struct _dnsServer {
     struct _dnsServer *next;
     char *name;
     //struct NS_SOCKADDR_STORAGE sa;
-    unsigned long fail_time;
+    Ns_Time fail_time;
     unsigned long fail_count;
 } dnsServer;
 
@@ -37,8 +37,9 @@ static Ns_Mutex dnsMutex;
 static dnsServer *dnsServers = 0;
 static int dnsResolverRetries = 3;
 static unsigned short dnsResolverPort = 53;
-static int dnsResolverTimeout = 5;
-static unsigned long dnsFailureTimeout = 300u;
+static Ns_Time dnsResolverTimeout = {5, 0};
+static const Ns_Time dnsDefaultTimeout = {5, 0};
+static Ns_Time dnsFailureTimeout = {300, 0};
 
 static struct {
    const char *name;
@@ -99,10 +100,10 @@ void dnsInit(const char *name, ...)
         dnsResolverRetries = va_arg(ap, int);
     } else
      if (!strcmp(name, "timeout")) {
-        dnsResolverTimeout = va_arg(ap, int);
+        dnsResolverTimeout = *va_arg(ap, const Ns_Time *);
     } else
      if (!strcmp(name, "failuretimeout")) {
-        dnsFailureTimeout = va_arg(ap, unsigned long);
+        dnsFailureTimeout = *va_arg(ap, const Ns_Time *);
     } else
      if (!strcmp(name, "ttl")) {
         dnsTTL = va_arg(ap, unsigned long);
@@ -117,11 +118,10 @@ void dnsInit(const char *name, ...)
  * the configured per-operation timeout.
  */
 static bool
-DnsQueryWait(const Ns_Time *deadline, int timeout, Ns_Time *wait,
+DnsQueryWait(const Ns_Time *deadline, const Ns_Time *timeout, Ns_Time *wait,
              dnsQueryStatus *status)
 {
-    wait->sec = timeout > 0 ? timeout : 5;
-    wait->usec = 0;
+    *wait = timeout != NULL ? *timeout : dnsDefaultTimeout;
     if (deadline != NULL) {
         Ns_Time now, remaining;
 
@@ -137,7 +137,7 @@ DnsQueryWait(const Ns_Time *deadline, int timeout, Ns_Time *wait,
 
 static bool
 DnsQueryTransfer(NS_SOCKET sock, char *data, size_t length,
-                 const Ns_Time *deadline, int timeout, bool writing,
+                 const Ns_Time *deadline, const Ns_Time *timeout, bool writing,
                  dnsQueryStatus *status)
 {
     while (length > 0) {
@@ -174,7 +174,7 @@ DnsQueryMatches(const dnsPacket *reply, const dnsPacket *req)
 
 static dnsPacket *
 DnsQueryTcp(dnsPacket *req, const char *server, unsigned short port,
-            int timeout, const Ns_Time *deadline, dnsQueryStatus *status)
+            const Ns_Time *timeout, const Ns_Time *deadline, dnsQueryStatus *status)
 {
     Ns_Time    wait;
     NS_SOCKET  sock;
@@ -221,7 +221,7 @@ done:
 }
 
 dnsPacket *
-dnsResolveTcp(dnsPacket *req, const char *server, unsigned short port, int timeout)
+dnsResolveTcp(dnsPacket *req, const char *server, unsigned short port, const Ns_Time *timeout)
 {
     dnsQueryStatus status;
 
@@ -231,7 +231,7 @@ dnsResolveTcp(dnsPacket *req, const char *server, unsigned short port, int timeo
 /* Shared UDP query engine, including validated TCP fallback. */
 static dnsPacket *
 DnsQueryAt(char *name, dnsType_t type, const char *server, unsigned short port,
-           int timeout, int retries, const Ns_Time *deadline, dnsQueryStatus *status)
+           const Ns_Time *timeout, int retries, const Ns_Time *deadline, dnsQueryStatus *status)
 {
     NS_SOCKET  sock;
     char       buf[DNS_BUFSIZE];
@@ -312,13 +312,13 @@ dnsResolveDetailed(char *name, dnsType_t type, const char *server,
 {
     Ns_Time deadline;
 
-    return DnsQueryAt(name, type, server, port, 5, 3,
+    return DnsQueryAt(name, type, server, port, &dnsDefaultTimeout, 3,
                       DnsQueryDeadline(timeout, &deadline), status);
 }
 
 dnsPacket *
 dnsResolveAt(char *name, dnsType_t type, const char *server,
-              unsigned short port, int timeout, int retries)
+              unsigned short port, const Ns_Time *timeout, int retries)
 {
     dnsQueryStatus status;
 
@@ -326,7 +326,7 @@ dnsResolveAt(char *name, dnsType_t type, const char *server,
 }
 
 dnsPacket *
-dnsResolve(char *name, dnsType_t type, const char *server, int timeout, int retries)
+dnsResolve(char *name, dnsType_t type, const char *server, const Ns_Time *timeout, int retries)
 {
     return dnsResolveAt(name, type, server, 53, timeout, retries);
 }
@@ -341,12 +341,13 @@ dnsLookupDetailed(char *name, dnsType_t type, const Ns_Time *timeoutPtr,
 
     *status = DNS_QUERY_NOSERVER;
     while (1) {
-        int            timeout, retries;
+        int            retries;
+        Ns_Time        timeout, now, elapsed;
         unsigned short port;
-        unsigned long  now = (unsigned long)time(NULL);
         dnsPacket     *reply;
         Ns_Time        wait;
 
+        Ns_GetTime(&now);
         Ns_MutexLock(&dnsMutex);
         timeout = dnsResolverTimeout;
         retries = dnsResolverRetries;
@@ -358,18 +359,22 @@ dnsLookupDetailed(char *name, dnsType_t type, const Ns_Time *timeoutPtr,
             server = dnsServers;
         }
         while (server != NULL) {
-            if (server->fail_time > 0 && now - server->fail_time > dnsFailureTimeout) {
-                server->fail_count = server->fail_time = 0;
+            if ((server->fail_time.sec != 0 || server->fail_time.usec != 0)
+                && Ns_DiffTime(&now, &server->fail_time, &elapsed) >= 0
+                && Ns_DiffTime(&elapsed, &dnsFailureTimeout, NULL) >= 0) {
+                server->fail_count = 0;
+                server->fail_time = (Ns_Time){0, 0};
             }
-            if (server->fail_time == 0) break;
+            if (server->fail_time.sec == 0 && server->fail_time.usec == 0) break;
             server = server->next;
         }
         Ns_MutexUnlock(&dnsMutex);
-        if (server == NULL || !DnsQueryWait(deadline, timeout, &wait, status)) break;
-        reply = DnsQueryAt(name, type, server->name, port, timeout, retries, deadline, status);
+        if (server == NULL || !DnsQueryWait(deadline, &timeout, &wait, status)) break;
+        reply = DnsQueryAt(name, type, server->name, port, &timeout, retries, deadline, status);
         if (reply != NULL) {
             Ns_MutexLock(&dnsMutex);
-            server->fail_count = server->fail_time = 0;
+            server->fail_count = 0;
+            server->fail_time = (Ns_Time){0, 0};
             Ns_MutexUnlock(&dnsMutex);
             return reply;
         }

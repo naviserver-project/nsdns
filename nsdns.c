@@ -40,7 +40,7 @@ typedef struct _dnsRequest {
     struct NS_SOCKADDR_STORAGE sa;
     unsigned short proxy_id;
     unsigned short proxy_count;
-    unsigned long proxy_time;
+    Ns_Time proxy_time;
     struct timeval recv_time;
     struct timeval start_time;
     char buffer[DNS_BUF_SIZE + 1];
@@ -85,9 +85,10 @@ static int DnsClientResolve(const char *host, struct sockaddr *saPtr);
 
 static unsigned short dnsID = 0u;
 static int dnsPort;
-static int dnsReadTimeout;
-static int dnsWriteTimeout;
-static int dnsProxyTimeout;
+static Ns_ObjvTimeRange dnsTimeRange = {{0, 0}, {INT_MAX, 0}};
+static Ns_Time dnsReadTimeout;
+static Ns_Time dnsWriteTimeout;
+static Ns_Time dnsProxyTimeout;
 static int dnsNegativeTTL;
 static unsigned long dnsCacheTTL;
 static int dnsUdpSock;
@@ -146,63 +147,28 @@ NS_EXPORT Ns_ReturnCode Ns_ModuleInit(const char *server, const char *module)
     path = Ns_ConfigGetPath(server, module, (char *)0);
     address = Ns_ConfigGetValue(path, "address");
 
-    if (Ns_ConfigGetInt(path, "flags", &intValue) && intValue > 0) {
-        dnsFlags = (unsigned int)intValue;
-    } else {
-        dnsFlags = 0u;
-    }
-    if (!Ns_ConfigGetInt(path, "debug", &dnsDebug)) {
-        dnsDebug = 0;
-    } else {
+    dnsFlags = (unsigned int)Ns_ConfigIntRange(path, "flags", 0, 0, INT_MAX);
+    /* Preserve explicit debug configuration as the severity enable switch. */
+    if (Ns_ConfigGetValue(path, "debug") != NULL) {
         (void)Ns_LogSeveritySetEnabled(DnsdDebug, NS_TRUE);
         Ns_Log(DnsdDebug, "debug is enabled");
     }
-    if (!Ns_ConfigGetInt(path, "port", &dnsPort)) {
-        dnsPort = 5353;
-    }
-    if (Ns_ConfigGetInt(path, "ttl", &intValue) && intValue > 0) {
-        dnsTTL = (unsigned long)intValue;
-    } else {
-        dnsTTL = 86400u;
-    }
-    if (!Ns_ConfigGetInt(path, "negativettl", &dnsNegativeTTL)) {
-        dnsNegativeTTL = 3600;
-    }
-    if (Ns_ConfigGetInt(path, "cachettl", &intValue) && intValue > 0) {
-        dnsCacheTTL = (unsigned int)intValue;
-    } else {
-        dnsCacheTTL = 0u;
-    }
-    if (!Ns_ConfigGetInt(path, "rcvbuf", &dnsRcvBuf)) {
-        dnsRcvBuf = 0;
-    }
-    if (!Ns_ConfigGetInt(path, "readtimeout", &dnsReadTimeout)) {
-        dnsReadTimeout = 30;
-    }
-    if (!Ns_ConfigGetInt(path, "writetimeout", &dnsWriteTimeout)) {
-        dnsWriteTimeout = 30;
-    }
-    if (!Ns_ConfigGetInt(path, "proxytimeout", &dnsProxyTimeout)) {
-        dnsProxyTimeout = 3;
-    }
-    if (!Ns_ConfigGetInt(path, "proxyretries", &dnsProxyRetries)) {
-        dnsProxyRetries = 2;
-    }
-    if (!Ns_ConfigGetInt(path, "threads", &dnsThreads)) {
-        dnsThreads = 1;
-    }
-    if (dnsThreads < 1 || dnsThreads > DNS_QUEUE_SIZE || dnsPort < 0 || dnsPort > 65535) {
-        Ns_Log(Error, "nsdns: invalid threads (1..%d) or port (0..65535)", DNS_QUEUE_SIZE);
-        return NS_ERROR;
-    }
+    dnsDebug = Ns_ConfigIntRange(path, "debug", 0, 0, INT_MAX);
+    dnsPort = Ns_ConfigIntRange(path, "port", 5353, 0, 65535);
+    dnsTTL = (unsigned long)Ns_ConfigIntRange(path, "ttl", 86400, 1, INT_MAX);
+    dnsNegativeTTL = Ns_ConfigIntRange(path, "negativettl", 3600, 0, INT_MAX);
+    dnsCacheTTL = (unsigned long)Ns_ConfigIntRange(path, "cachettl", 0, 0, INT_MAX);
+    dnsRcvBuf = Ns_ConfigIntRange(path, "rcvbuf", 0, 0, INT_MAX);
+    Ns_ConfigTimeUnitRange(path, "readtimeout", "30s", 0, 0, INT_MAX, 0,
+                           &dnsReadTimeout);
+    Ns_ConfigTimeUnitRange(path, "writetimeout", "30s", 0, 0, INT_MAX, 0,
+                           &dnsWriteTimeout);
+    Ns_ConfigTimeUnitRange(path, "proxytimeout", "3s", 0, 0, INT_MAX, 0,
+                           &dnsProxyTimeout);
+    dnsProxyRetries = Ns_ConfigIntRange(path, "proxyretries", 2, 0, USHRT_MAX);
+    dnsThreads = Ns_ConfigIntRange(path, "threads", 1, 1, DNS_QUEUE_SIZE);
     dnsDefaultHost = Ns_ConfigGetValue(path, "defaulthost");
-    if (Ns_ConfigGetValue(path, "nameserverport") == NULL) {
-        intValue = 53;
-    } else if (!Ns_ConfigGetInt(path, "nameserverport", &intValue)
-               || intValue < 1 || intValue > 65535) {
-        Ns_Log(Error, "nsdns: nameserverport must be an integer in the range 1..65535");
-        return NS_ERROR;
-    }
+    intValue = Ns_ConfigIntRange(path, "nameserverport", 53, 1, 65535);
     dnsInit("port", intValue);
     /* Resolving dns servers */
     dnsInit("nameserver", Ns_ConfigGetValue(path, "nameserver"), (char *)NULL);
@@ -227,9 +193,7 @@ NS_EXPORT Ns_ReturnCode Ns_ModuleInit(const char *server, const char *module)
         Ns_SockCallback(dnsTcpSock, DnsTcpListen, 0,
                         NS_SOCK_READ | NS_SOCK_EXIT | NS_SOCK_EXCEPTION);
         /* DNS proxy thread */
-        if (!Ns_ConfigGetInt(path, "proxyport", &dnsProxyPort)) {
-            dnsProxyPort = 53;
-        }
+        dnsProxyPort = Ns_ConfigIntRange(path, "proxyport", 53, 1, 65535);
         if ((dnsProxyHost = Ns_ConfigGetValue(path, "proxyhost"))) {
             if (Ns_GetSockAddr(dnsProxyAddrPtr, dnsProxyHost, (unsigned short)dnsProxyPort) == NS_OK) {
                 dnsProxySock = socket(dnsProxyAddrPtr->sa_family, SOCK_DGRAM, 0);
@@ -334,13 +298,13 @@ static int DnsCmd(ClientData UNUSED(arg), Tcl_Interp *interp, TCL_SIZE_T objc, T
     int cmd;
     struct NS_SOCKADDR_STORAGE sa;
     struct sockaddr *saPtr = (struct sockaddr *)&sa;
-    TCL_SIZE_T argc = objc, argp = 2;
-    char tmp[128];
-    dnsRecord *drec;
-    Tcl_HashEntry *hrec;
-    Tcl_HashSearch search;
-    unsigned long n, r;
-    dnsClient *client = &dnsClientDflt;
+    TCL_SIZE_T       argc = objc, argp = 2;
+    char             tmp[128];
+    dnsRecord       *drec;
+    Tcl_HashEntry   *hrec;
+    Tcl_HashSearch   search;
+    unsigned long    n, r;
+    dnsClient       *client = &dnsClientDflt;
 
     if (objc < 2) {
         Tcl_AppendResult(interp, "wrong # args: should be ns_dns command ?args ...?", 0);
@@ -670,14 +634,14 @@ static int DnsCmd(ClientData UNUSED(arg), Tcl_Interp *interp, TCL_SIZE_T objc, T
         Ns_ObjvSpec lookupOpts[] = {
             {"-details", Ns_ObjvBool, &details, INT2PTR(NS_TRUE)},
             {"-jointxt", Ns_ObjvBool, &jointxt, INT2PTR(NS_TRUE)},
-            {"-timeout", Ns_ObjvTime, &timeout, NULL},
+            {"-timeout", Ns_ObjvTime, &timeout, &dnsTimeRange},
             {"--", Ns_ObjvBreak, NULL, NULL},
             {NULL, NULL, NULL, NULL}
         };
         Ns_ObjvSpec resolveOpts[] = {
             {"-details", Ns_ObjvBool, &details, INT2PTR(NS_TRUE)},
             {"-jointxt", Ns_ObjvBool, &jointxt, INT2PTR(NS_TRUE)},
-            {"-timeout", Ns_ObjvTime, &timeout, NULL},
+            {"-timeout", Ns_ObjvTime, &timeout, &dnsTimeRange},
             {"-type", Ns_ObjvString, &type, NULL},
             {"-server", Ns_ObjvString, &server, NULL},
             {"-port", Ns_ObjvInt, &port, NULL},
@@ -719,11 +683,6 @@ static int DnsCmd(ClientData UNUSED(arg), Tcl_Interp *interp, TCL_SIZE_T objc, T
         } else if (port < 1 || port > 65535) {
             Tcl_SetObjResult(interp, Tcl_NewStringObj("port must be 1..65535", -1));
             return TCL_ERROR;
-
-        } else if (timeout != NULL && (!legacy || details)
-            && (timeout->sec < 0 || timeout->usec < 0)) {
-            Tcl_SetObjResult(interp, Tcl_NewStringObj("timeout must be nonnegative", -1));
-            return TCL_ERROR;
         }
 
         if (type != NULL) {
@@ -733,12 +692,9 @@ static int DnsCmd(ClientData UNUSED(arg), Tcl_Interp *interp, TCL_SIZE_T objc, T
             reply = dnsLookupDetailed(name, qtype, timeout, &status);
 
         } else if (legacy && !details && timeout != NULL) {
-            /* Historical resolve timeouts were integer seconds per attempt. */
-            if (timeout->sec > INT_MAX || timeout->sec < INT_MIN) {
-                Tcl_SetObjResult(interp, Tcl_NewStringObj("legacy resolve timeout out of range", -1));
-                return TCL_ERROR;
-            }
-            reply = dnsResolveAt(name, qtype, server, (unsigned short)port, (int)timeout->sec, 3);
+            /* Retain per-attempt waits and the historical zero/default rule. */
+            const Ns_Time *wait = timeout->sec == 0 && timeout->usec == 0 ? NULL : timeout;
+            reply = dnsResolveAt(name, qtype, server, (unsigned short)port, wait, 3);
             status = DNS_QUERY_NETWORK; /* Legacy failure still returns empty. */
         } else {
             reply = dnsResolveDetailed(name, qtype, server, (unsigned short)port, timeout, &status);
@@ -805,12 +761,20 @@ static int DnsCmd(ClientData UNUSED(arg), Tcl_Interp *interp, TCL_SIZE_T objc, T
 
             for (i = 2; i < objc - 1; i += 2) {
                 char *key = Tcl_GetString(objv[i]);
-                if (!strcmp("ttl", key) ||
+                if (!strcmp("timeout", key) || !strcmp("failuretimeout", key)) {
+                    Ns_Time *value = NULL;
+                    Ns_ObjvSpec args[] = {
+                        {"timeout", Ns_ObjvTime, &value, &dnsTimeRange},
+                        {NULL, NULL, NULL, NULL}
+                    };
+                    if (Ns_ParseObjv(NULL, args, interp, 0, 1, &objv[i + 1]) != NS_OK) {
+                        return TCL_ERROR;
+                    }
+                    dnsInit(key, (const Ns_Time *)value);
+                } else if (!strcmp("ttl", key) ||
                     !strcmp("debug", key) ||
                     !strcmp("flags", key) ||
-                    !strcmp("timeout", key) ||
-                    !strcmp("retry", key) ||
-                    !strcmp("failuretimeout", key)) {
+                    !strcmp("retry", key)) {
                     dnsInit(key, strtol(Tcl_GetString(objv[i + 1]), NULL, 10));
                 } else if (!strcmp("nameserver", key)) {
                     dnsInit(key, Tcl_GetString(objv[i + 1]), (char *)NULL);
@@ -1008,7 +972,7 @@ static void DnsTcpThread(void *argPtr)
 static void DnsProxyThread(void *UNUSED(arg))
 {
     ssize_t len;
-    time_t now;
+    Ns_Time now;
     dnsRequest *req;
     char buf[DNS_BUF_SIZE + 1];
     char ipString[NS_IPADDR_SIZE];
@@ -1021,14 +985,18 @@ static void DnsProxyThread(void *UNUSED(arg))
            dnsProxyPort, dnsProxySock);
 
     while (1) {
+        Ns_Time nextWait = {1, 0};
 
         Ns_MutexLock(&dnsProxyMutex);
         while (dnsProxyQueue == 0) {
             Ns_CondWait(&dnsProxyCond, &dnsProxyMutex);
         }
-        now = time(0);
+        Ns_GetTime(&now);
         for (req = dnsProxyQueue; req != NULL;) {
-            if (now - (time_t)req->proxy_time > dnsProxyTimeout) {
+            Ns_Time deadline = req->proxy_time, remaining;
+
+            Ns_IncrTime(&deadline, dnsProxyTimeout.sec, dnsProxyTimeout.usec);
+            if (req->proxy_count == 0 || Ns_DiffTime(&deadline, &now, &remaining) <= 0) {
                 char proxyIpString[NS_IPADDR_SIZE];
 
                 /* First time, prepare for proxying, use our own id sequence to
@@ -1071,13 +1039,15 @@ static void DnsProxyThread(void *UNUSED(arg))
                        req->req->buf.size, 0,
                        dnsProxyAddrPtr, Ns_SockaddrGetSockLen(dnsProxyAddrPtr));
                 req->proxy_count++;
-                req->proxy_time = (unsigned long)now;
+                req->proxy_time = now;
+                remaining = dnsProxyTimeout;
                 dnsPacketLog(req->req, 4, "Sending to proxy:");
             }
+            if (Ns_DiffTime(&remaining, &nextWait, NULL) < 0) nextWait = remaining;
             req = req->next;
         }
         Ns_MutexUnlock(&dnsProxyMutex);
-        if (Ns_SockWait(dnsProxySock, NS_SOCK_READ, 1) != NS_OK) {
+        if (Ns_SockTimedWait(dnsProxySock, NS_SOCK_READ, &nextWait) != NS_OK) {
             continue;
         }
 
@@ -1143,7 +1113,7 @@ static void DnsProxyThread(void *UNUSED(arg))
                     /* Re-encode to include the TCP length prefix. */
                     dnsEncodePacket(req->req);
                     complete = dnsResolveTcp(req->req, dnsProxyHost,
-                                             (unsigned short)dnsProxyPort, dnsProxyTimeout);
+                                             (unsigned short)dnsProxyPort, &dnsProxyTimeout);
                     if (complete != NULL) {
                         dnsPacketFree(req->reply, 0);
                         req->reply = complete;
@@ -1167,11 +1137,10 @@ static ssize_t dnsRead(int sock, void *vbuf, size_t len)
 {
     ssize_t nread;
     char *buf = (char *) vbuf;
-    Ns_Time timeout = { dnsReadTimeout, 0 };
 
     nread = (ssize_t)len;
     while (len > 0) {
-        ssize_t n = Ns_SockRecv(sock, buf, len, &timeout);
+        ssize_t n = Ns_SockRecv(sock, buf, len, &dnsReadTimeout);
 
         if (n <= 0) {
             return -1;
@@ -1187,12 +1156,11 @@ static ssize_t dnsWrite(int sock, void *vbuf, size_t len)
 {
     ssize_t nwrote;
     char *buf;
-    Ns_Time timeout = { dnsWriteTimeout, 0 };
 
     nwrote = (ssize_t)len;
     buf = vbuf;
     while (len > 0) {
-        ssize_t n = Ns_SockSend(sock, buf, len, &timeout);
+        ssize_t n = Ns_SockSend(sock, buf, len, &dnsWriteTimeout);
 
         if (n <= 0) {
             return -1;

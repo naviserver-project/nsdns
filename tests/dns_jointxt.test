@@ -1,0 +1,54 @@
+package require tcltest 2.2
+namespace import ::tcltest::*
+source [file join [file dirname [info script]] support.tcl]
+
+foreach details {0 1} {
+    test dns-jointxt-1.$details {lookup joins byte strings without inserting separators} -constraints {nsdns fixtureProcess} -setup {
+        ::dnsTest::startFixture
+    } -body {
+        set flags [expr {$details ? {-details} : {}}]
+        set result [ns_dns lookup -jointxt {*}$flags remote.test TXT]
+        set answers [expr {$details ? [dict get $result answer] : [lindex $result 0]}]
+        list [binary encode hex [lindex $answers 0 2]] \
+            [llength [lindex [ns_dns lookup remote.test TXT] 0 0 2]]
+    } -result {757073747265616d00ff 3}
+
+    test dns-jointxt-2.$details {resolve joins SPF strings; default view and stored data stay segmented} -constraints {nsdns transport} -setup {
+        ns_dns flush
+        ns_dns add joined.test TXT [list {v=spf1 include:_spf.example.org} { -all}] 300
+    } -body {
+        set flags [expr {$details ? {-details} : {}}]
+        set options [list -type TXT -server [ns_config test host] -port [ns_config test port]]
+        set result [ns_dns resolve -jointxt {*}$flags {*}$options joined.test]
+        set answers [expr {$details ? [dict get $result answer] : [lindex $result 0]}]
+        list [lindex $answers 0 2] \
+            [llength [lindex [ns_dns resolve joined.test {*}$options] 0 0 2]]
+    } -cleanup {ns_dns flush} -result {{v=spf1 include:_spf.example.org -all} 2}
+}
+
+test dns-jointxt-3 {separate TXT records remain separate even when joined values coincide} -constraints {nsdns transport} -setup {
+    ns_dns flush
+    ns_dns add joined.test TXT {ab c} 300
+    ns_dns add joined.test TXT {a bc} 300
+} -body {
+    set d [ns_dns resolve joined.test -jointxt -details -type TXT \
+               -server [ns_config test host] -port [ns_config test port]]
+    lmap rr [dict get $d answer] {lindex $rr 2}
+} -cleanup {ns_dns flush} -result {abc abc}
+
+test dns-jointxt-4 {empty TXT strings yield one empty byte string} -constraints {nsdns transport} -setup {
+    ns_dns flush
+    ns_dns add joined.test TXT [list "" ""] 300
+} -body {
+    set rr [lindex [ns_dns resolve -jointxt -type TXT \
+                       -server [ns_config test host] -port [ns_config test port] joined.test] 0 0]
+    list [llength $rr] [string length [lindex $rr 2]]
+} -cleanup {ns_dns flush} -result {4 0}
+
+test dns-jointxt-5 {non-TXT records are unchanged} -constraints {nsdns fixtureProcess} -setup {
+    ::dnsTest::startFixture
+} -body {
+    expr {[ns_dns lookup -jointxt remote.test AAAA] eq [ns_dns lookup remote.test AAAA]}
+} -result 1
+
+cleanupTests

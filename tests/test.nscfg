@@ -44,6 +44,9 @@ ns_section ns/server/test/modules {ns_param nsdns $root/nsdns.so}
 ns_section ns/server/test/module/nsdns {
     ns_param address $host
     ns_param port $port
+    ns_param readtimeout 1500ms
+    ns_param writetimeout 1.5s
+    ns_param proxytimeout 250ms
     ns_param nameserver $host
     ns_param nameserverport $upstream
     if {!$fixture && $enabled} {

@@ -23,7 +23,7 @@
  *
  */
 
-#define DNS_VERSION "0.9.0"
+#define DNS_VERSION "0.10.0"
 
 /* DNS flags */
 #define DNS_TCP                 0x0001u
@@ -221,9 +221,9 @@ void dnsPacketFree(dnsPacket *pkt, dnsType_t type);
 int dnsPacketAddRecord(dnsPacket *pkt,dnsRecord **list, uint16_t *count, dnsRecord *rec);
 int dnsPacketInsertRecord(dnsPacket * pkt, dnsRecord ** list, uint16_t *count, dnsRecord *rec);
 void dnsInit(const char *name,...);
-dnsPacket *dnsResolveTcp(dnsPacket *req, const char *server, unsigned short port, int timeout);
-dnsPacket *dnsResolveAt(char *name, dnsType_t type, const char *server, unsigned short port, int timeout, int retries);
-dnsPacket *dnsResolve(char *name, dnsType_t type, const char *server, int timeout, int retries);
+dnsPacket *dnsResolveTcp(dnsPacket *req, const char *server, unsigned short port, const Ns_Time *timeout);
+dnsPacket *dnsResolveAt(char *name, dnsType_t type, const char *server, unsigned short port, const Ns_Time *timeout, int retries);
+dnsPacket *dnsResolve(char *name, dnsType_t type, const char *server, const Ns_Time *timeout, int retries);
 dnsPacket *dnsLookup(char *name, dnsType_t type, int *errcode);
 
 /* Detailed query status is separate from the response's DNS RCODE. */

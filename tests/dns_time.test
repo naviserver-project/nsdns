@@ -1,0 +1,42 @@
+package require tcltest 2.2
+namespace import ::tcltest::*
+source [file join [file dirname [info script]] support.tcl]
+
+foreach command {
+    {ns_dns lookup -timeout VALUE host.test TXT}
+    {ns_dns resolve -timeout VALUE host.test}
+    {ns_dns resolve host.test -timeout VALUE}
+    {ns_dns config timeout VALUE}
+    {ns_dns config failuretimeout VALUE}
+} {
+    foreach value {-1ms 2147483648s invalid} {
+        test dns-time-range-$command-$value {timeout values use standard range validation} -constraints nsdns -body {
+            {*}[lmap word $command {expr {$word eq "VALUE" ? $value : $word}}]
+        } -returnCodes error -match glob -result {*}
+    }
+}
+
+test dns-time-config-1 {runtime timeouts accept durations and fractional seconds} -constraints nsdns -body {
+    ns_dns config timeout 250ms failuretimeout 0.5
+} -cleanup {
+    ns_dns config timeout 5s failuretimeout 300s
+} -result {}
+
+foreach form {legacy} {
+    test dns-time-fractional-$form {per-attempt timeouts preserve subsecond precision} -constraints {nsdns transport tcludp udpFamily} -setup {
+        set opts [expr {[ns_config test family] == 6 ? {ipv6} : {}}]
+        set blackhole [udp_open 0 {*}$opts]
+        set port [fconfigure $blackhole -myport]
+        ns_dns config timeout 100ms
+    } -body {
+        set start [clock milliseconds]
+        # Hostname-first resolve must not truncate 100ms to zero/default.
+        ns_dns resolve host.test -server [ns_config test host] -port $port -timeout 100ms
+        set elapsed [expr {[clock milliseconds] - $start}]
+        expr {$elapsed >= 200 && $elapsed < 2000}
+    } -cleanup {
+        close $blackhole
+        ns_dns config timeout 5s
+    } -result 1
+}
+cleanupTests

@@ -1,0 +1,91 @@
+package require tcltest 2.2
+namespace import ::tcltest::*
+source [file join [file dirname [info script]] support.tcl]
+
+test dns-details-1 {lookup dictionary preserves TXT string lists} -constraints {nsdns fixtureProcess} -setup {
+    ::dnsTest::startFixture
+} -body {
+    set d [ns_dns lookup -details remote.test TXT]
+    list [lsort [dict keys $d]] [dict get $d rcode] [dict get $d truncated] \
+        [lindex [dict get $d answer] 0 1] [llength [lindex [dict get $d answer] 0 2]]
+} -result {{additional answer authority rcode truncated} 0 0 TXT 3}
+
+test dns-details-2 {new and legacy resolve syntax have identical detailed results} -constraints {nsdns fixtureProcess} -setup {
+    ::dnsTest::startFixture
+} -body {
+    set options [list -server [ns_config test host] -port [ns_config test upstreamport] -type TXT -details]
+    expr {[ns_dns resolve {*}$options remote.test] eq [ns_dns resolve remote.test {*}$options]}
+} -result 1
+
+test dns-details-3 {NXDOMAIN is a response, not a Tcl error} -constraints {nsdns fixtureProcess} -setup {
+    ::dnsTest::startFixture
+} -body {
+    set d [ns_dns lookup -details absent.remote.test TXT]
+    list [dict get $d rcode] [dict get $d answer]
+} -result {3 {}}
+
+test dns-details-4 {TCP fallback returns complete detailed result} -constraints {nsdns fixtureProcess} -setup {
+    ::dnsTest::startFixture
+} -body {
+    set d [ns_dns lookup -details -timeout 3s large.remote.test TXT]
+    list [dict get $d truncated] [lmap s [lindex [dict get $d answer] 0 2] {string length $s}]
+} -result {0 {255 255 255}}
+
+test dns-details-5 {zero total deadline uses standard timeout error} -constraints {nsdns transport} -body {
+    try {
+        ns_dns resolve -details -timeout 0s -server [ns_config test host] remote.test
+    } trap NS_TIMEOUT {message options} {dict get $options -errorcode}
+} -result NS_TIMEOUT
+
+test dns-details-6 {lookup supports standard duration parsing and timeout errors} -constraints {nsdns transport} -body {
+    try {ns_dns lookup -details -timeout 0ms remote.test TXT} trap NS_TIMEOUT {message options} {
+        dict get $options -errorcode
+    }
+} -result NS_TIMEOUT
+
+test dns-details-7 {without details timeout still returns empty} -constraints {nsdns transport} -body {
+    ns_dns lookup -timeout 0ms remote.test TXT
+} -result {}
+
+test dns-details-8 {option terminator permits leading hyphen DNS names} -constraints {nsdns fixtureProcess} -setup {
+    ::dnsTest::startFixture
+} -body {
+    dict get [ns_dns lookup -details -- -absent.test TXT] rcode
+} -result 3
+
+test dns-details-9 {Ns_ParseObjv rejects extra positional arguments} -constraints nsdns -body {
+    ns_dns lookup host.test TXT extra
+} -returnCodes error -match glob -result {*wrong # args*}
+
+test dns-details-10 {Ns_ParseObjv rejects an unknown option} -constraints nsdns -body {
+    ns_dns lookup -bogus host.test TXT
+} -returnCodes error -match glob -result {*}
+
+test dns-details-11 {fractional deadline is shared across retries} -constraints {nsdns tcludp udpFamily transport} -setup {
+    set opts [expr {[ns_config test family] == 6 ? {ipv6} : {}}]
+    set blackhole [udp_open 0 {*}$opts]
+    set port [fconfigure $blackhole -myport]
+} -body {
+    set start [clock milliseconds]
+    try {
+        ns_dns resolve -details -timeout 100ms -server [ns_config test host] -port $port host.test
+    } trap NS_TIMEOUT {} {
+        expr {[clock milliseconds] - $start < 1000}
+    }
+} -cleanup {close $blackhole} -result 1
+
+test dns-details-12 {invalid upstream address has a structured network error} -constraints {nsdns transport} -body {
+    try {
+        ns_dns resolve -details -timeout 1s -server ::invalid host.test
+    } trap {NSDNS NETWORK} {message options} {dict get $options -errorcode}
+} -result {NSDNS NETWORK}
+
+test dns-details-13 {bare legacy resolve failures remain empty} -constraints {nsdns transport} -setup {
+    set listener [ns_socklisten [ns_config test host] 0]
+    set port [lindex [fconfigure $listener -sockname] 2]
+} -body {
+    ns_dns resolve host.test -server [ns_config test host] -port $port -timeout 1
+} -cleanup {close $listener} -result {}
+
+
+cleanupTests

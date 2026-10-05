@@ -140,6 +140,7 @@ typedef struct _dnsRecord {
       dnsNAPTR *naptr;
       dnsSOA *soa;
     } data;
+    size_t cacheBytes; /* Nonzero only for retained, network-learned records. */
     unsigned long timestamp;
     unsigned short rcode;
 } dnsRecord;

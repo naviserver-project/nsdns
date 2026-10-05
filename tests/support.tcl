@@ -172,3 +172,60 @@ proc ::dnsTest::stopFixture {} {
 }
 
 ::tcltest::testConstraint nsdProcess [expr {[info commands ns_info] ne "" && [file executable [info nameofexecutable]]}]
+
+::tcltest::testConstraint nsudp [expr {[info commands ns_udp] ne ""}]
+::tcltest::testConstraint udpSend [expr {[::tcltest::testConstraint nsudp] || [::tcltest::testConstraint udpFamily]}]
+proc ::dnsTest::sendUdp {wire} {
+    if {[::tcltest::testConstraint nsudp]} {
+        ns_udp -noreply -bind [ns_config test host] [ns_config test host] [ns_config test port] $wire
+    } else {
+        set opts [expr {[ns_config test family] == 6 ? {ipv6} : {}}]
+        set channel [udp_open 0 {*}$opts]
+        try {
+            fconfigure $channel -translation binary -buffering none \
+                -remote [list [ns_config test host] [ns_config test port]]
+            puts -nonewline $channel $wire
+            flush $channel
+        } finally {close $channel}
+    }
+}
+proc ::dnsTest::waitFor {script {timeout 4000}} {
+    set deadline [expr {[clock milliseconds]+$timeout}]
+    while {![uplevel 1 $script]} {
+        if {[clock milliseconds] >= $deadline} {error "condition timed out: $script"}
+        after 10
+    }
+}
+# Observe peer closure without mistaking a callback timeout for rejection.
+proc ::dnsTest::openTcp {} {
+    set channel [ns_connchan connect -timeout 3 [ns_config test host] [ns_config test port]]
+    nsv_set dnsLimit $channel [dict create closed 0 data {}]
+    ns_connchan callback -timeout 5 -receivetimeout 5 $channel [list apply {
+        {channel reason} {
+            set state [nsv_get dnsLimit $channel]
+            if {$reason eq "r"} {
+                if {[catch {ns_connchan read $channel} bytes]} {
+                    dict set state closed 1
+                } elseif {$bytes eq ""} {
+                    dict set state closed 1
+                } else {
+                    dict append state data $bytes
+                }
+            } elseif {$reason eq "e"} {
+                dict set state closed 1
+            } else {
+                dict set state error "unexpected socket event $reason"
+            }
+            nsv_set dnsLimit $channel $state
+            return [expr {[dict get $state closed] || [dict exists $state error] ? 2 : 1}]
+        }
+    } $channel] re
+    return $channel
+}
+proc ::dnsTest::closeTcp {channels} {
+    foreach channel $channels {
+        catch {ns_connchan close $channel}
+        catch {nsv_unset dnsLimit $channel}
+    }
+    waitFor {expr {[dict get [ns_dns stat] tcpactive] == 0}}
+}

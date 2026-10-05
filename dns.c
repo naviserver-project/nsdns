@@ -1721,7 +1721,7 @@ dnsPacket *dnsPacketCreateQuery(const char *name, dnsType_t type)
         return 0;
     }
     pkt = ns_calloc(1, sizeof(dnsPacket));
-    pkt->id = (unsigned short)((unsigned long) pkt % (unsigned long) name);
+    pkt->id = (unsigned short)(Ns_DRand() * 65536.0);
     DNS_SET_RD(pkt->u, 1);
     pkt->buf.allocated = DNS_REPLY_SIZE;
     pkt->buf.data = ns_calloc(1, pkt->buf.allocated);

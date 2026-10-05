@@ -44,8 +44,14 @@ ns_section ns/server/test/modules {ns_param nsdns $root/nsdns.so}
 ns_section ns/server/test/module/nsdns {
     ns_param address $host
     ns_param port $port
+    ns_param maxtcpconnections 4
+    ns_param maxqueuesize 4
+    ns_param maxfreelist 2
+    ns_param maxpending 2
+    ns_param maxcacherecords 8
+    ns_param maxcachebytes 8192
     ns_param readtimeout 1500ms
-    ns_param writetimeout 1.5s
+    ns_param writetimeout [expr {$fixture ? "0s" : "1.5s"}]
     ns_param proxytimeout 250ms
     ns_param nameserver $host
     ns_param nameserverport $upstream
@@ -63,5 +69,15 @@ if {$connchan} {
         ns_param defaultserver test
         ns_param recvwait 3s
         ns_param sendwait 3s
+    }
+}
+
+# Prefer NaviServer's UDP primitive for resource-limit tests.
+# Load only an explicitly selected binary built for this NaviServer/Tcl ABI.
+if {[info exists ::env(NSDNS_TEST_NSUDP)] && $::env(NSDNS_TEST_NSUDP) ne ""} {
+    ns_section ns/server/test/modules {ns_param nsudp $::env(NSDNS_TEST_NSUDP)}
+    ns_section ns/server/test/module/nsudp {
+        ns_param address $host
+        ns_param port 0
     }
 }

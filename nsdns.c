@@ -25,6 +25,7 @@ typedef struct _dnsClient {
     char ipaddr[NS_IPADDR_SIZE];
     Tcl_HashTable list;
     struct _dnsClient *link;
+    size_t learnedCount, learnedBytes;
     unsigned long rcount;
     unsigned short rstats[256];
 } dnsClient;
@@ -54,6 +55,8 @@ typedef struct _dnsQueue {
     unsigned long size;
     unsigned long maxsize;
     unsigned long requests;
+    unsigned long dropped;
+    unsigned int freecount;
     unsigned long rtime;
     unsigned long wtime;
     struct _dnsRequest *head;
@@ -66,9 +69,12 @@ static void dnsRequestFree(dnsRequest *req);
 static ssize_t dnsRequestSend(dnsRequest *req);
 static int dnsRequestHandle(dnsRequest *req);
 static int dnsRequestFind(dnsRequest *req, dnsRecord *qlist, unsigned int depth);
-static void dnsRecordCache(dnsClient *client, dnsRecord **list);
+static void dnsRecordCache(dnsClient *client, dnsRecord **list, bool learned);
+static void DnsCacheForget(dnsClient *client, dnsRecord *record);
+static void DnsCacheSweep(void *arg, int id);
+static void DnsTcpClose(NS_SOCKET sock);
 static ssize_t dnsWrite(int sock, void *vbuf, size_t len);
-static ssize_t dnsRead(int sock, void *vbuf, size_t len);
+static ssize_t dnsRead(int sock, void *vbuf, size_t len, const Ns_Time *deadline);
 static TCL_OBJCMDPROC_T DnsCmd;
 
 static Ns_TclTraceProc DnsInterpInit;
@@ -76,6 +82,7 @@ static Ns_SockProc DnsTcpListen;
 
 static void DnsTcpThread(void *arg);
 static void DnsProxyThread(void *arg);
+static bool DnsProxyId(uint16_t *idPtr);
 static void DnsQueueListenThread(void *arg);
 static void DnsQueueRequestThread(void *arg);
 static dnsClient *DnsClientFind(char *host, struct sockaddr *saPtr);
@@ -83,7 +90,6 @@ static dnsClient *DnsClientCreate(char *host);
 static void DnsClientLink(char *host, char *host2);
 static int DnsClientResolve(const char *host, struct sockaddr *saPtr);
 
-static unsigned short dnsID = 0u;
 static int dnsPort;
 static Ns_ObjvTimeRange dnsTimeRange = {{0, 0}, {INT_MAX, 0}};
 static Ns_Time dnsReadTimeout;
@@ -96,6 +102,11 @@ static int dnsTcpSock;
 static int dnsProxyPort;
 static int dnsProxySock = -1;
 static int dnsThreads;
+static int dnsMaxTcpConnections, dnsMaxQueue, dnsMaxFree, dnsMaxPending;
+static int dnsMaxCacheRecords, dnsMaxCacheBytes;
+static Ns_Mutex dnsTcpMutex;
+static unsigned int dnsTcpConnections, dnsProxyPending;
+static unsigned long dnsTcpRejected, dnsProxyRejected;
 static int dnsRcvBuf;
 static int dnsProxyRetries;
 static const char *dnsProxyHost = NULL;
@@ -128,7 +139,8 @@ Ns_ModuleGetInfo(Ns_ModuleInfo *infoPtr)
 
 NS_EXPORT Ns_ReturnCode Ns_ModuleInit(const char *server, const char *module)
 {
-    const char *path, *address;
+    const char *path;
+    char       *address;
     int         intValue;
 
     Ns_Log(Notice, "nsdns module version %s server: %s", DNS_VERSION, server);
@@ -143,9 +155,17 @@ NS_EXPORT Ns_ReturnCode Ns_ModuleInit(const char *server, const char *module)
     Ns_RWLockInit(&dnsClientDflt.lock);
     Tcl_InitHashTable(&dnsClientDflt.list, TCL_STRING_KEYS);
     memset(&dnsQueues, 0, sizeof(dnsQueues));
+    Ns_MutexInit(&dnsTcpMutex);
+    Ns_MutexInit(&dnsProxyMutex);
+    Ns_CondInit(&dnsProxyCond);
+    for (int i = 0; i < DNS_QUEUE_SIZE; i++) {
+        Ns_MutexInit(&dnsQueues[i].lock);
+        Ns_CondInit(&dnsQueues[i].cond);
+    }
 
     path = Ns_ConfigGetPath(server, module, (char *)0);
-    address = Ns_ConfigGetValue(path, "address");
+    /* Configuration defaults can grow the section's string storage. */
+    address = ns_strcopy(Ns_ConfigGetValue(path, "address"));
 
     dnsFlags = (unsigned int)Ns_ConfigIntRange(path, "flags", 0, 0, INT_MAX);
     /* Preserve explicit debug configuration as the severity enable switch. */
@@ -167,7 +187,13 @@ NS_EXPORT Ns_ReturnCode Ns_ModuleInit(const char *server, const char *module)
                            &dnsProxyTimeout);
     dnsProxyRetries = Ns_ConfigIntRange(path, "proxyretries", 2, 0, USHRT_MAX);
     dnsThreads = Ns_ConfigIntRange(path, "threads", 1, 1, DNS_QUEUE_SIZE);
-    dnsDefaultHost = Ns_ConfigGetValue(path, "defaulthost");
+    dnsMaxTcpConnections = Ns_ConfigIntRange(path, "maxtcpconnections", 64, 1, INT_MAX);
+    dnsMaxQueue = Ns_ConfigIntRange(path, "maxqueuesize", 128, 1, INT_MAX);
+    dnsMaxFree = Ns_ConfigIntRange(path, "maxfreelist", 16, 0, INT_MAX);
+    dnsMaxPending = Ns_ConfigIntRange(path, "maxpending", 256, 1, INT_MAX);
+    dnsMaxCacheRecords = Ns_ConfigIntRange(path, "maxcacherecords", 10000, 0, INT_MAX);
+    dnsMaxCacheBytes = Ns_ConfigIntRange(path, "maxcachebytes", 16777216, 0, INT_MAX);
+    dnsDefaultHost = ns_strcopy(Ns_ConfigGetValue(path, "defaulthost"));
     intValue = Ns_ConfigIntRange(path, "nameserverport", 53, 1, 65535);
     dnsInit("port", intValue);
     /* Resolving dns servers */
@@ -175,18 +201,20 @@ NS_EXPORT Ns_ReturnCode Ns_ModuleInit(const char *server, const char *module)
 
     /* If no port specified it will be just client dns resolver module */
     if (dnsPort > 0) {
-        int n, i;
+        int n;
 
         /* UDP socket */
         if ((dnsUdpSock = Ns_SockListenUdp(address, (unsigned short)dnsPort, NS_FALSE)) == -1) {
             Ns_Log(Error, "nsdns: udp: [%s]:%d: couldn't create socket: %s",
                    address, dnsPort, strerror(errno));
+            ns_free(address);
             return NS_ERROR;
         }
         /* TCP socket */
         if ((dnsTcpSock = Ns_SockListen(address, (unsigned short)dnsPort)) == -1) {
             Ns_Log(Error, "nsdns: tcp: [%s]:%d: couldn't create socket: %s",
                    address, dnsPort, strerror(errno));
+            ns_free(address);
             return NS_ERROR;
         }
         /* Use NS callback facility because TCP is not going to be very busy */
@@ -194,7 +222,7 @@ NS_EXPORT Ns_ReturnCode Ns_ModuleInit(const char *server, const char *module)
                         NS_SOCK_READ | NS_SOCK_EXIT | NS_SOCK_EXCEPTION);
         /* DNS proxy thread */
         dnsProxyPort = Ns_ConfigIntRange(path, "proxyport", 53, 1, 65535);
-        if ((dnsProxyHost = Ns_ConfigGetValue(path, "proxyhost"))) {
+        if ((dnsProxyHost = ns_strcopy(Ns_ConfigGetValue(path, "proxyhost")))) {
             if (Ns_GetSockAddr(dnsProxyAddrPtr, dnsProxyHost, (unsigned short)dnsProxyPort) == NS_OK) {
                 dnsProxySock = socket(dnsProxyAddrPtr->sa_family, SOCK_DGRAM, 0);
             }
@@ -202,6 +230,7 @@ NS_EXPORT Ns_ReturnCode Ns_ModuleInit(const char *server, const char *module)
                 ns_sockclose(dnsUdpSock);
                 ns_sockclose(dnsTcpSock);
                 Ns_Log(Error, "nsdns: create proxy thread [%s]:%d: %s", dnsProxyHost, dnsProxyPort, strerror(errno));
+                ns_free(address);
                 return NS_ERROR;
             }
             Ns_Log(DnsdDebug, "nsdns: create proxy thread, host %s port %d", dnsProxyHost, dnsProxyPort);
@@ -214,14 +243,12 @@ NS_EXPORT Ns_ReturnCode Ns_ModuleInit(const char *server, const char *module)
         /* Start queue threads */
         for (n = 0; n < dnsThreads; n++) {
             dnsQueues[n].id = n;
-            Ns_MutexInit(&dnsQueues[n].lock);
-            /* Preallocate SIP tickets */
-            for (i = 0; i <= dnsThreads * 10; i++) {
-                dnsRequest *req = ns_calloc(1, sizeof(dnsRequest));
-                req->next = dnsQueues[n].freelist;
-                dnsQueues[n].freelist = req;
-            }
             Ns_ThreadCreate(DnsQueueRequestThread, &dnsQueues[n], 0, 0);
+        }
+        /* Expire learned records even when their names are never queried again. */
+        if (dnsProxyHost != NULL) {
+            const Ns_Time interval = {1, 0};
+            (void)Ns_ScheduleProcEx(DnsCacheSweep, NULL, 0, &interval, NULL);
         }
         /* Start listen thread */
         Ns_ThreadCreate(DnsQueueListenThread, 0, 0, 0);
@@ -230,6 +257,7 @@ NS_EXPORT Ns_ReturnCode Ns_ModuleInit(const char *server, const char *module)
     Ns_Log(Notice, "nsdns: version %s listening on [%s]:%d, (udp %d, tcp %d)",
            DNS_VERSION, (address != 0) ? address : "0.0.0.0", dnsPort,
            dnsUdpSock, dnsTcpSock);
+    ns_free(address);
     Ns_TclRegisterTrace(server, DnsInterpInit, 0, NS_TCL_TRACE_CREATE);
     return NS_OK;
 }
@@ -439,7 +467,7 @@ static int DnsCmd(ClientData UNUSED(arg), Tcl_Interp *interp, TCL_SIZE_T objc, T
                 return TCL_ERROR;
             }
             dnsRecordUpdate(drec);
-            dnsRecordCache(client, &drec);
+            dnsRecordCache(client, &drec, NS_FALSE);
         }
         break;
 
@@ -474,6 +502,7 @@ static int DnsCmd(ClientData UNUSED(arg), Tcl_Interp *interp, TCL_SIZE_T objc, T
                             client->rstats[drec->nsize]--;
                         }
                         dnsRecordRemove(&list, drec);
+                        DnsCacheForget(client, drec);
                         dnsRecordFree(drec);
                     }
                     drec = next;
@@ -581,6 +610,9 @@ static int DnsCmd(ClientData UNUSED(arg), Tcl_Interp *interp, TCL_SIZE_T objc, T
         hrec = Tcl_FirstHashEntry(&client->list, &search);
         while (hrec) {
             drec = Tcl_GetHashValue(hrec);
+            for (dnsRecord *record = drec; record != NULL; record = record->next) {
+                DnsCacheForget(client, record);
+            }
             dnsRecordDestroy(&drec);
             Tcl_DeleteHashEntry(hrec);
             hrec = Tcl_NextHashEntry(&search);
@@ -594,13 +626,30 @@ static int DnsCmd(ClientData UNUSED(arg), Tcl_Interp *interp, TCL_SIZE_T objc, T
         {
             int i;
             for (n = 0, r = 0, i = 0; i < dnsThreads; i++) {
+                Ns_MutexLock(&dnsQueues[i].lock);
                 n += dnsQueues[i].size;
                 r += dnsQueues[i].requests;
                 sprintf(tmp, "size%d %lu maxsize%d %lu rtime%d %lu wtime%d %lu requests%d %lu ",
                         i, dnsQueues[i].size, i, dnsQueues[i].maxsize,
                         i, dnsQueues[i].rtime, i, dnsQueues[i].wtime, i, dnsQueues[i].requests);
                 Tcl_AppendResult(interp, tmp, 0);
+                snprintf(tmp, sizeof(tmp), "dropped%d %lu free%d %u ",
+                         i, dnsQueues[i].dropped, i, dnsQueues[i].freecount);
+                Tcl_AppendResult(interp, tmp, 0);
+                Ns_MutexUnlock(&dnsQueues[i].lock);
             }
+            Ns_MutexLock(&dnsTcpMutex);
+            snprintf(tmp, sizeof(tmp), "tcpactive %u tcprejected %lu ", dnsTcpConnections, dnsTcpRejected);
+            Ns_MutexUnlock(&dnsTcpMutex);
+            Tcl_AppendResult(interp, tmp, 0);
+            Ns_MutexLock(&dnsProxyMutex);
+            snprintf(tmp, sizeof(tmp), "pending %u proxyrejected %lu ", dnsProxyPending, dnsProxyRejected);
+            Ns_MutexUnlock(&dnsProxyMutex);
+            Tcl_AppendResult(interp, tmp, 0);
+            Ns_RWLockRdLock(&client->lock);
+            snprintf(tmp, sizeof(tmp), "cacherecords %zu cachebytes %zu ", client->learnedCount, client->learnedBytes);
+            Ns_RWLockUnlock(&client->lock);
+            Tcl_AppendResult(interp, tmp, 0);
             sprintf(tmp, "total %lu requests %lu", n, r);
             Tcl_AppendResult(interp, tmp, 0);
             break;
@@ -804,6 +853,7 @@ static void DnsQueueListenThread(void *UNUSED(arg))
             Ns_Log(Error, "nsdns: recvfrom error (udp sock %d): %s", dnsUdpSock, strerror(errno));
             continue;
         }
+        if (buf.size < DNS_HEADER_LEN) continue;
         buf.buffer[buf.size] = 0;
         gettimeofday(&recv_time, 0);
 
@@ -813,7 +863,14 @@ static void DnsQueueListenThread(void *UNUSED(arg))
          *  Link new job into the queue
          */
         Ns_MutexLock(&dnsQueues[id].lock);
+        if (dnsQueues[id].size >= (unsigned long)dnsMaxQueue) {
+            dnsQueues[id].dropped++;
+            Ns_MutexUnlock(&dnsQueues[id].lock);
+            if (++id >= dnsThreads) id = 0;
+            continue;
+        }
         if ((req = dnsQueues[id].freelist)) {
+            dnsQueues[id].freecount--;
             dnsQueues[id].freelist = req->next;
             req->next = 0;
         }
@@ -903,8 +960,13 @@ static void DnsQueueRequestThread(void *arg)
         Ns_MutexLock(&queue->lock);
         /* Put request structure back if not handled by proxy */
         if (req != 0) {
-            req->next = queue->freelist;
-            queue->freelist = req;
+            if (queue->freecount < (unsigned int)dnsMaxFree) {
+                req->next = queue->freelist;
+                queue->freelist = req;
+                queue->freecount++;
+            } else {
+                ns_free(req);
+            }
         }
         if (rt > queue->rtime) {
             queue->rtime = rt;
@@ -918,6 +980,7 @@ static void DnsQueueRequestThread(void *arg)
 typedef struct {
     NS_SOCKET sock;
     struct NS_SOCKADDR_STORAGE sa;
+    Ns_Time deadline;
 } DnsTcpArg;
 
 static bool DnsTcpListen(NS_SOCKET sock, void *UNUSED(si), unsigned int when)
@@ -930,6 +993,18 @@ static bool DnsTcpListen(NS_SOCKET sock, void *UNUSED(si), unsigned int when)
             ns_free(arg);
             return NS_TRUE;
         }
+        Ns_MutexLock(&dnsTcpMutex);
+        if (dnsTcpConnections >= (unsigned int)dnsMaxTcpConnections) {
+            dnsTcpRejected++;
+            Ns_MutexUnlock(&dnsTcpMutex);
+            ns_sockclose(arg->sock);
+            ns_free(arg);
+            return NS_TRUE;
+        }
+        dnsTcpConnections++;
+        Ns_MutexUnlock(&dnsTcpMutex);
+        Ns_GetTime(&arg->deadline);
+        Ns_IncrTime(&arg->deadline, dnsReadTimeout.sec, dnsReadTimeout.usec);
         Ns_ThreadCreate(DnsTcpThread, arg, 0, NULL);
         return NS_TRUE;
     }
@@ -947,16 +1022,16 @@ static void DnsTcpThread(void *argPtr)
 
     ns_free(argPtr);
     Ns_SockSetNonBlocking(arg.sock);
-    if (dnsRead(arg.sock, &wireLength, sizeof(wireLength)) != sizeof(wireLength)) {
-        ns_sockclose(arg.sock);
+    if (dnsRead(arg.sock, &wireLength, sizeof(wireLength), &arg.deadline) != sizeof(wireLength)) {
+        DnsTcpClose(arg.sock);
         return;
     }
     length = ntohs(wireLength);
     buf = ns_malloc(length);
-    if (dnsRead(arg.sock, buf, length) != (ssize_t)length
+    if (dnsRead(arg.sock, buf, length, &arg.deadline) != (ssize_t)length
         || (req = dnsRequestCreate(arg.sock, buf, length)) == NULL) {
         ns_free(buf);
-        ns_sockclose(arg.sock);
+        DnsTcpClose(arg.sock);
         return;
     }
     ns_free(buf);
@@ -967,6 +1042,24 @@ static void DnsTcpThread(void *argPtr)
         dnsRequestSend(req);
         dnsRequestFree(req);
     }
+}
+
+/* Called with dnsProxyMutex held. Only transmitted requests own an ID. */
+static bool DnsProxyId(uint16_t *idPtr)
+{
+    for (unsigned int attempt = 0; attempt < 128u; attempt++) {
+        uint16_t candidate = (uint16_t)(Ns_DRand() * 65536.0);
+        dnsRequest *pending;
+
+        for (pending = dnsProxyQueue; pending != NULL; pending = pending->next) {
+            if (pending->proxy_count != 0u && pending->req->id == candidate) break;
+        }
+        if (pending == NULL) {
+            *idPtr = candidate;
+            return NS_TRUE;
+        }
+    }
+    return NS_FALSE;
 }
 
 static void DnsProxyThread(void *UNUSED(arg))
@@ -998,19 +1091,23 @@ static void DnsProxyThread(void *UNUSED(arg))
             Ns_IncrTime(&deadline, dnsProxyTimeout.sec, dnsProxyTimeout.usec);
             if (req->proxy_count == 0 || Ns_DiffTime(&deadline, &now, &remaining) <= 0) {
                 char proxyIpString[NS_IPADDR_SIZE];
+                bool idUnavailable = NS_FALSE;
 
-                /* First time, prepare for proxying, use our own id sequence to
-                 * keep track of forwarded requests */
+                /* Assign an unpredictable ID unique among outstanding transactions. */
                 if (req->proxy_count == 0) {
                     uint16_t wireId;
 
                     req->proxy_id = req->req->id;
-                    req->req->id = ++dnsID;
-                    wireId = htons(req->req->id);
-                    memcpy(req->req->buf.data + 2, &wireId, sizeof(wireId));
+                    if (DnsProxyId(&wireId)) {
+                        req->req->id = wireId;
+                        wireId = htons(wireId);
+                        memcpy(req->req->buf.data + 2, &wireId, sizeof(wireId));
+                    } else {
+                        idUnavailable = NS_TRUE;
+                    }
                 }
                 /* Reached max request limit, reply with not found code */
-                if (req->proxy_count >= dnsProxyRetries) {
+                if (idUnavailable || req->proxy_count >= dnsProxyRetries) {
                     dnsRequest *next = req->next;
                     if (req->prev == 0) {
                         dnsProxyQueue = req->next;
@@ -1021,8 +1118,8 @@ static void DnsProxyThread(void *UNUSED(arg))
                         req->next->prev = req->prev;
                     }
                     DNS_SET_RCODE(req->reply->u, RCODE_SRVFAIL);
-                    req->req->qdlist->rcode = RCODE_SRVFAIL;
-                    dnsRecordCache(req->client, &req->req->qdlist);
+                    /* Questions have no RDATA and must never enter the answer cache. */
+                    dnsProxyPending--;
                     dnsRequestSend(req);
                     dnsRequestFree(req);
                     req = next;
@@ -1085,7 +1182,7 @@ static void DnsProxyThread(void *UNUSED(arg))
             uint16_t wireId;
             memcpy(&wireId, buf, sizeof(wireId));
 
-            if (req->req->id == ntohs(wireId)) {
+            if (req->proxy_count != 0u && req->req->id == ntohs(wireId)) {
                 if (req->prev == 0) {
                     dnsProxyQueue = req->next;
                 } else {
@@ -1094,6 +1191,7 @@ static void DnsProxyThread(void *UNUSED(arg))
                 if (req->next != 0) {
                     req->next->prev = req->prev;
                 }
+                dnsProxyPending--;
                 break;
             }
         }
@@ -1123,9 +1221,9 @@ static void DnsProxyThread(void *UNUSED(arg))
                 dnsRequestSend(req);
                 /* A truncated answer is not a complete cache entry. */
                 if (!DNS_GET_TC(req->reply->u)) {
-                    dnsRecordCache(req->client, &req->reply->anlist);
-                    dnsRecordCache(req->client, &req->reply->nslist);
-                    dnsRecordCache(req->client, &req->reply->arlist);
+                    dnsRecordCache(req->client, &req->reply->anlist, NS_TRUE);
+                    dnsRecordCache(req->client, &req->reply->nslist, NS_TRUE);
+                    dnsRecordCache(req->client, &req->reply->arlist, NS_TRUE);
                 }
             }
             dnsRequestFree(req);
@@ -1133,14 +1231,23 @@ static void DnsProxyThread(void *UNUSED(arg))
     }
 }
 
-static ssize_t dnsRead(int sock, void *vbuf, size_t len)
+static ssize_t dnsRead(int sock, void *vbuf, size_t len, const Ns_Time *deadline)
 {
     ssize_t nread;
     char *buf = (char *) vbuf;
 
     nread = (ssize_t)len;
     while (len > 0) {
-        ssize_t n = Ns_SockRecv(sock, buf, len, &dnsReadTimeout);
+        Ns_Time now, remaining;
+        ssize_t n;
+
+        Ns_GetTime(&now);
+        if (Ns_DiffTime(deadline, &now, &remaining) <= 0) {
+            if (dnsReadTimeout.sec != 0 || dnsReadTimeout.usec != 0) return -1;
+            /* Preserve zero as a nonblocking poll, not an unconditional failure. */
+            remaining.sec = remaining.usec = 0;
+        }
+        n = Ns_SockRecv(sock, buf, len, &remaining);
 
         if (n <= 0) {
             return -1;
@@ -1157,10 +1264,22 @@ static ssize_t dnsWrite(int sock, void *vbuf, size_t len)
     ssize_t nwrote;
     char *buf;
 
+    Ns_Time deadline;
+
+    Ns_GetTime(&deadline);
+    Ns_IncrTime(&deadline, dnsWriteTimeout.sec, dnsWriteTimeout.usec);
     nwrote = (ssize_t)len;
     buf = vbuf;
     while (len > 0) {
-        ssize_t n = Ns_SockSend(sock, buf, len, &dnsWriteTimeout);
+        Ns_Time now, remaining;
+        ssize_t n;
+
+        Ns_GetTime(&now);
+        if (Ns_DiffTime(&deadline, &now, &remaining) <= 0) {
+            if (dnsWriteTimeout.sec != 0 || dnsWriteTimeout.usec != 0) return -1;
+            remaining.sec = remaining.usec = 0;
+        }
+        n = Ns_SockSend(sock, buf, len, &remaining);
 
         if (n <= 0) {
             return -1;
@@ -1190,13 +1309,22 @@ static void *dnsRequestCreate(int sock, char *buf, size_t len)
     return req;
 }
 
+static void DnsTcpClose(NS_SOCKET sock)
+{
+    ns_sockclose(sock);
+    Ns_MutexLock(&dnsTcpMutex);
+    assert(dnsTcpConnections > 0u);
+    dnsTcpConnections--;
+    Ns_MutexUnlock(&dnsTcpMutex);
+}
+
 static void dnsRequestFree(dnsRequest *req)
 {
     if (req == 0) {
         return;
     }
     /* Ns_Log(Debug,"rfree[%d]: %x, %x %x",getpid(),req,req->req,req->reply); */
-    if ((req->flags & DNS_TCP) != 0u) ns_sockclose(req->sock);
+    if ((req->flags & DNS_TCP) != 0u) DnsTcpClose(req->sock);
     dnsPacketFree(req->req, 3);
     dnsPacketFree(req->reply, 4);
     ns_free(req);
@@ -1291,6 +1419,10 @@ static int dnsRequestFind(dnsRequest *req, dnsRecord *qlist, unsigned int depth)
                     dnsRecord *next = qcache->next;
 
                     dnsRecordLog(qcache, 2, "Record expired:");
+                    if (qcache->type == DNS_TYPE_NAPTR && qcache->nsize >= 0
+                        && qcache->nsize < 256 && req->client->rstats[qcache->nsize] > 0u) {
+                        req->client->rstats[qcache->nsize]--;
+                    }
                     if (qcache->prev != 0) {
                         qcache->prev->next = qcache->next;
                     }
@@ -1298,8 +1430,10 @@ static int dnsRequestFind(dnsRequest *req, dnsRecord *qlist, unsigned int depth)
                         qcache->next->prev = qcache->prev;
                     }
                     if (!qcache->next && !qcache->prev) {
+                        DnsCacheForget(req->client, qcache);
                         dnsRecordFree(qcache);
                         Tcl_DeleteHashEntry(hrec);
+                        req->client->rcount--;
                         qstart = qend = 0;
                         break;
                     }
@@ -1310,6 +1444,7 @@ static int dnsRequestFind(dnsRequest *req, dnsRecord *qlist, unsigned int depth)
                             Tcl_SetHashValue(hrec, qstart);
                         }
                     }
+                    DnsCacheForget(req->client, qcache);
                     dnsRecordFree(qcache);
                     qcache = next;
                     continue;
@@ -1439,6 +1574,13 @@ static int dnsRequestHandle(dnsRequest *req)
             /* Put request into proxy queue */
             if (dnsProxyHost != 0) {
                 Ns_MutexLock(&dnsProxyMutex);
+                if (dnsProxyPending >= (unsigned int)dnsMaxPending) {
+                    dnsProxyRejected++;
+                    Ns_MutexUnlock(&dnsProxyMutex);
+                    DNS_SET_RCODE(req->reply->u, RCODE_SRVFAIL);
+                    return 0;
+                }
+                dnsProxyPending++;
                 req->prev = 0;
                 req->next = dnsProxyQueue;
                 if (req->next != 0) {
@@ -1512,10 +1654,129 @@ static ssize_t dnsRequestSend(dnsRequest *req)
     return rc;
 }
 
-static void dnsRecordCache(dnsClient *client, dnsRecord **list)
+/* Charge retained allocations plus a conservative hash/allocator allowance.
+ * A zero result means required RDATA is missing (e.g. a parsed question).
+ */
+static size_t DnsCacheCharge(const dnsRecord *record)
+{
+    size_t size;
+
+    if (record->name == NULL) return 0u;
+    /* Include wire RDATA as well: NAPTR character strings may contain NULs. */
+    size = sizeof(dnsRecord) + 256u + record->len
+        + 2u * ((size_t)record->nsize + 1u);
+    switch (record->type) {
+    case DNS_TYPE_A:
+        if (record->data.sa.ss_family != AF_INET) return 0u;
+        break;
+    case DNS_TYPE_AAAA:
+        if (record->data.sa.ss_family != AF_INET6) return 0u;
+        break;
+    case DNS_TYPE_CNAME:
+    case DNS_TYPE_NS:
+    case DNS_TYPE_PTR:
+        if (record->data.name == NULL) return 0u;
+        size += strlen(record->data.name) + 1u;
+        break;
+    case DNS_TYPE_TXT:
+        if (record->data.txt == NULL || record->len == 0u) return 0u;
+        size += record->len;
+        break;
+    case DNS_TYPE_MX:
+        if (record->data.mx == NULL || record->data.mx->name == NULL) return 0u;
+        size += sizeof(dnsMX) + strlen(record->data.mx->name) + 1u;
+        break;
+    case DNS_TYPE_SOA:
+        if (record->data.soa == NULL || record->data.soa->mname == NULL
+            || record->data.soa->rname == NULL) return 0u;
+        size += sizeof(dnsSOA) + strlen(record->data.soa->mname)
+            + strlen(record->data.soa->rname) + 2u;
+        break;
+    case DNS_TYPE_NAPTR:
+        if (record->data.naptr == NULL || record->data.naptr->flags == NULL
+            || record->data.naptr->service == NULL) return 0u;
+        size += sizeof(dnsNAPTR) + strlen(record->data.naptr->flags)
+            + strlen(record->data.naptr->service)
+            + (record->data.naptr->regexp != NULL ? strlen(record->data.naptr->regexp) + 1u : 0u)
+            + (record->data.naptr->replace != NULL ? strlen(record->data.naptr->replace) + 1u : 0u) + 2u;
+        break;
+    case DNS_TYPE_WKS:
+    case DNS_TYPE_HINFO:
+    case DNS_TYPE_MINFO:
+    case DNS_TYPE_OPT:
+    case DNS_TYPE_SRV:
+    case DNS_TYPE_ANY:
+    default:
+        return 0u;
+    }
+    return size;
+}
+
+/* Called with the owning client's write lock, before freeing or pinning. */
+static void DnsCacheForget(dnsClient *client, dnsRecord *record)
+{
+    if (record->cacheBytes != 0u) {
+        assert(client->learnedCount > 0u && client->learnedBytes >= record->cacheBytes);
+        client->learnedCount--;
+        client->learnedBytes -= record->cacheBytes;
+        record->cacheBytes = 0u;
+    }
+}
+
+static void DnsCacheExpire(dnsClient *client, unsigned long now)
+{
+    Tcl_HashSearch search;
+    Tcl_HashEntry *entry;
+
+    Ns_RWLockWrLock(&client->lock);
+    for (entry = Tcl_FirstHashEntry(&client->list, &search); entry != NULL;
+         entry = Tcl_NextHashEntry(&search)) {
+        dnsRecord *list = Tcl_GetHashValue(entry), *record = list;
+
+        while (record != NULL) {
+            dnsRecord *next = record->next;
+            if (record->cacheBytes != 0u && record->ttl != 0u
+                && now > record->timestamp && now - record->timestamp > record->ttl) {
+                if (record->type == DNS_TYPE_NAPTR && record->nsize >= 0
+                    && record->nsize < 256 && client->rstats[record->nsize] > 0u) {
+                    client->rstats[record->nsize]--;
+                }
+                dnsRecordRemove(&list, record);
+                DnsCacheForget(client, record);
+                dnsRecordFree(record);
+            }
+            record = next;
+        }
+        if (list == NULL) {
+            Tcl_DeleteHashEntry(entry);
+            client->rcount--;
+        } else {
+            Tcl_SetHashValue(entry, list);
+        }
+    }
+    Ns_RWLockUnlock(&client->lock);
+}
+
+static void DnsCacheSweep(void *UNUSED(arg), int UNUSED(id))
+{
+    Tcl_HashSearch search;
+    Tcl_HashEntry *entry;
+    unsigned long now = (unsigned long)time(NULL);
+
+    DnsCacheExpire(&dnsClientDflt, now);
+    Ns_RWLockRdLock(&dnsClientLock);
+    for (entry = Tcl_FirstHashEntry(&dnsClientList, &search); entry != NULL;
+         entry = Tcl_NextHashEntry(&search)) {
+        DnsCacheExpire(Tcl_GetHashValue(entry), now);
+    }
+    Ns_RWLockUnlock(&dnsClientLock);
+}
+
+static void dnsRecordCache(dnsClient *client, dnsRecord **list, bool learned)
 {
     int flag;
     dnsRecord *drec, *hlist;
+    size_t charge;
     time_t now = time(0);
 
     while (*list) {
@@ -1531,6 +1792,11 @@ static void dnsRecordCache(dnsClient *client, dnsRecord **list)
             dnsRecordFree(drec);
             continue;
         }
+        charge = DnsCacheCharge(drec);
+        if (charge == 0u) {
+            dnsRecordFree(drec);
+            continue;
+        }
         drec->timestamp = (unsigned long)now;
         drec->next = drec->prev = 0;
         /*
@@ -1541,23 +1807,43 @@ static void dnsRecordCache(dnsClient *client, dnsRecord **list)
             drec->ttl = dnsCacheTTL;
         }
         Ns_RWLockWrLock(&client->lock);
-        hrec = Tcl_CreateHashEntry(&client->list, drec->name, &flag);
-        if (flag != 0) {
-            Tcl_SetHashValue(hrec, drec);
-            client->rcount++;
-        } else {
-            hlist = Tcl_GetHashValue(hrec);
-            if (!dnsRecordSearch(hlist, drec, 1)) {
-                if ((drec->next = hlist)) {
-                    hlist->prev = drec;
-                }
-                Tcl_SetHashValue(hrec, drec);
-            } else {
+        hrec = Tcl_FindHashEntry(&client->list, drec->name);
+        hlist = hrec != NULL ? Tcl_GetHashValue(hrec) : NULL;
+        /* Preserve duplicate behavior, but a local add pins a learned record. */
+        for (dnsRecord *record = hlist; record != NULL; record = record->next) {
+            dnsRecord *next = record->next;
+            int match;
+
+            record->next = NULL;
+            match = dnsRecordSearch(record, drec, !learned || record->cacheBytes != 0u);
+            record->next = next;
+            if (match != 0) {
+                if (!learned) DnsCacheForget(client, record);
+                dnsRecordFree(drec);
+                drec = NULL;
+                break;
+            }
+        }
+        if (drec == NULL) {
+            Ns_RWLockUnlock(&client->lock);
+            continue;
+        }
+        if (learned) {
+            if (client->learnedCount >= (size_t)dnsMaxCacheRecords
+                || charge > (size_t)dnsMaxCacheBytes - client->learnedBytes) {
+                /* Still forward the answer, but do not retain it under pressure. */
                 dnsRecordFree(drec);
                 Ns_RWLockUnlock(&client->lock);
                 continue;
             }
+            drec->cacheBytes = charge;
+            client->learnedCount++;
+            client->learnedBytes += charge;
         }
+        hrec = Tcl_CreateHashEntry(&client->list, drec->name, &flag);
+        if (flag != 0) client->rcount++;
+        if ((drec->next = hlist) != NULL) hlist->prev = drec;
+        Tcl_SetHashValue(hrec, drec);
         if (drec->type == DNS_TYPE_NAPTR) {
             /*
              * Update route statistics, mark that we have routes with

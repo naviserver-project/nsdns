@@ -72,6 +72,12 @@ Use `address ::1` for IPv6 loopback. The `address`, `nameserver`, and
 `proxyhost` settings accept IPv4 or IPv6 addresses. Wildcard dual-stack
 behavior depends on NaviServer and the operating system.
 
+DNS transaction IDs use NaviServer's `Ns_DRand()` API. The proxy checks for
+collisions with transmitted requests and keeps the assigned ID for retries.
+If it cannot allocate a free ID after 128 attempts, it returns SERVFAIL.
+The random source is provided by the NaviServer build; nsdns introduces no
+direct OpenSSL dependency.
+
 ### Parameters
 
 Timeouts accept NaviServer durations such as `250ms`, `1.5s`, or bare seconds,
@@ -80,7 +86,8 @@ missing or malformed values use the default; values outside the range are
 clamped to the nearest bound with a warning. Ports are limited to 0..65535
 for the listener and 1..65535 for upstreams; threads to 1..16; the default
 record TTL to 1..2147483647. Proxy attempts are limited to 0..65535 by the request counter. Other integer
-settings use 0..2147483647.
+settings use 0..2147483647, except the connection, queue and pending-request
+limits, which require at least 1.
 
 | Parameter | Default | Description |
 | --- | --- | --- |
@@ -95,13 +102,30 @@ settings use 0..2147483647.
 | `ttl` | `86400` | Default record TTL in seconds. A positive value overrides the default; ns_dns add can supply a per-record TTL. |
 | `cachettl` | `0` | Minimum nonzero TTL in seconds for records inserted into the cache. Positive values raise shorter nonzero TTLs; 0 leaves them unchanged. |
 | `negativettl` | `3600` | Legacy negative-response TTL setting in seconds. Currently read by the module but not used; setting it does not enable negative caching. |
-| `readtimeout` | `30s` | TCP client read timeout in seconds. |
-| `writetimeout` | `30s` | TCP client write timeout in seconds. |
+| `readtimeout` | `30s` | Total TCP read deadline from acceptance, shared by the length prefix and payload; incoming bytes do not restart it. Zero polls without waiting. |
+| `writetimeout` | `30s` | Total deadline for writing a TCP response; partial writes do not restart it. Zero polls without waiting. |
 | `threads` | `1` | Number of DNS request worker queues and threads (1..16). Used when the local listener is enabled. |
+| `maxtcpconnections` | `64` | Maximum accepted TCP connections, including sockets awaiting proxy replies (1..2147483647). Excess connections are closed before creating a worker thread. |
+| `maxqueuesize` | `128` | Maximum queued UDP requests per worker (1..2147483647); excess datagrams are dropped before allocation. One additional request can be executing in each worker. |
+| `maxfreelist` | `16` | Maximum idle request objects retained per UDP worker (0..2147483647). Set to 0 to free completed objects immediately. Each object contains a 64 KiB packet buffer. |
+| `maxpending` | `256` | Maximum queued proxy requests, shared by UDP and TCP (1..2147483647). Excess requests receive SERVFAIL. One additional proxy reply can be in processing. |
+| `maxcacherecords` | `10000` | Maximum network-learned resource records per client cache, including the default cache (0..2147483647). Locally added records are exempt. Set to 0 to disable learned caching. |
+| `maxcachebytes` | `16777216` | Maximum charged bytes of network-learned records per client cache (0..2147483647), including conservative RDATA, hash and allocation overhead. Set to 0 to disable learned caching. When either cache limit is reached, answers are forwarded without retaining new records; expired learned records are swept every second. |
 | `rcvbuf` | `0` | Local UDP socket receive and send buffer size in bytes. Despite the name, sets both SO_RCVBUF and SO_SNDBUF. 0 preserves operating-system defaults. |
 | `defaulthost` | Unset | Fallback numeric address for unanswered A or AAAA queries when proxyhost is unset. Must match the requested address family. Omit to disable; does not synthesize TXT records. |
 | `debug` | `0` | DNS diagnostic verbosity. Higher values produce more detail; explicitly configuring this parameter also enables the Debug(dnsd) log severity. |
 | `flags` | `0` | Legacy behavior bit mask. Bit 4 (DNS_NAPTR_REGEXP) enables NAPTR regexp processing. Leave at 0 for ordinary DNS/TXT use. |
+
+The limits apply to the listener and its forwarding cache, not to outgoing
+`ns_dns lookup` or `ns_dns resolve` commands. Queue limits are per worker;
+proxy and TCP admission limits are shared by the module. TCP admission remains
+charged until the socket closes, including while a request is forwarded.
+Upstream proxy timeouts return SERVFAIL without caching incomplete question records.
+
+`ns_dns stat` includes `tcpactive`, `tcprejected`, `pending`, `proxyrejected`,
+`cacherecords`, and `cachebytes` (the latter two for the default client cache),
+plus `droppedN` and `freeN` for each UDP worker N. Existing queue statistics remain
+available. Cache bytes are an admission charge, not a measurement of process RSS.
 
 ## Usage
 
@@ -341,11 +365,18 @@ Dependencies are declared with `tcltest` constraints in [tests/support.tcl](test
 | `moduleInfo` | `ns_server modules` is available |
 | `transport` | the selected loopback family can bind |
 | `ipv4`, `ipv6` | the active usable transport family |
+| `nsudp`, `udpSend` | Optional nsudp module providing `ns_udp`; UDP sending falls back to tcludp for the selected address family |
 | `nsdProcess` | NaviServer and an executable nsd for isolated startup tests |
 | `fixtureProcess` | transport and an executable nsd for the Tcl fixture |
 | `tcludp` | optional udp package, version 1.0.5 or later |
 | `udpFamily` | `tcludp` can open the selected address family |
 
+The UDP resource-limit test prefers `ns_udp`, with a tcludp fallback. Select an
+optional nsudp binary built for the same NaviServer and Tcl installation:
+
+```sh
+NSDNS_TEST_NSUDP=/usr/local/ns/bin/nsudp.so make test
+```
 Only direct raw-UDP/EDNS tests require `tcludp`. The ordinary UDP resolver
 and UDP-to-TCP retry tests use `ns_dns` and run without it. Unavailable IPv6
 or optional packages skip dependent tests and appear in `tcltest`'s summary.

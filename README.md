@@ -19,9 +19,17 @@ Compile the module with:
 make
 ```
 
-The `dns_procs.tcl` file can be installed in `/usr/local/ns/modules/tcl`
-to load on startup. It imports `/etc/hosts` into the DNS cache as `A` and
-`AAAA` records, allowing the module to serve these hosts.
+Install the module and its Tcl definitions with `make install`. The standard
+module rules place `dns-procs.tcl` in the shared Tcl library's `nsdns`
+subdirectory (normally `/usr/local/ns/tcl/nsdns`). It imports `/etc/hosts`
+into the DNS cache as `A` and `AAAA` records when the module is loaded.
+
+On NaviServer versions supporting `ns_module reload`, this location also
+allows `ns_module reload nsdns` and the nsstats process-page button to reload
+the Tcl definitions. Compiled DNS code is not reloaded. When upgrading an older
+installation, remove any obsolete `dns_procs.tcl` copy from either the shared
+Tcl library root or its `nsdns` subdirectory after installing `nsdns/dns-procs.tcl`,
+to avoid sourcing both filenames.
 
 When switching Tcl major versions, build against the corresponding NaviServer
 installation and rebuild all objects:

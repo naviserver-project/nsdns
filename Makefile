@@ -19,14 +19,9 @@ HDRS	= dns.h
 #
 # Modules to install
 #
-PROCS   = dns_procs.tcl
-
-INSTALL += install-procs
+TCL = dns-procs.tcl
 
 include  $(NAVISERVER)/include/Makefile.module
-
-install-procs: $(PROCS)
-	for f in $(PROCS); do $(INSTALL_SH) $$f $(INSTTCL)/; done
 
 
 

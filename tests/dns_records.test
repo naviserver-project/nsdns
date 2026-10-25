@@ -8,7 +8,7 @@ test dns-metadata-1.1 {module introspection reports build and ABI metadata} -con
 } -result {nsdns 0.10.0 module 1 1}
 
 test dns-hosts-1.1 {hosts import supports IPv6, aliases, and inline comments} -constraints nsdns -setup {
-    source [file join [file dirname [info script]] .. dns_procs.tcl]
+    source [file join [file dirname [info script]] .. dns-procs.tcl]
     set hosts [makeFile "2001:db8::99 hosts6.test alias6.test # comment\n192.0.2.99 hosts4.test\n" hosts]
 } -body {
     dns_reload $hosts

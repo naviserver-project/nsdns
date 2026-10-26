@@ -107,6 +107,9 @@ test dns-limits-cache-2 {large TXT records are bounded by bytes before the recor
 
 test dns-limits-cache-3 {unvisited learned records expire without another lookup} -constraints {nsdns fixtureProcess connchan} -setup {
     ns_dns flush
+    # expire.test has a one-second TTL in the upstream fixture. Earlier tests
+    # may have used that process for longer, so start this test with fresh data.
+    ::dnsTest::stopFixture
     ::dnsTest::startFixture
 } -body {
     ::dnsTest::tcp expire.test 16

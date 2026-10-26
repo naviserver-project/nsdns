@@ -1,0 +1,33 @@
+# Tcl definitions must be installed under the module name for core reloads.
+package require tcltest 2.2
+namespace import ::tcltest::*
+set moduleRoot [file normalize [file join [file dirname [info script]] ..]]
+set prefix [expr {[info exists ::env(NAVISERVER)] ? $::env(NAVISERVER)
+                  : [file dirname [file dirname [info nameofexecutable]]]}]
+set rules [file join $prefix include Makefile.module]
+testConstraint moduleInstallRules [expr {[file readable $rules] && [auto_execok make] ne ""}]
+
+test dns-install-tcl {install Tcl code in the module directory, not the library root} \
+    -constraints moduleInstallRules -setup {
+        set directory [makeDirectory nsdns-install-test]
+        file mkdir $directory/prefix/include
+        file copy -force $rules $directory/prefix/include/Makefile.module
+        set f [open $directory/prefix/include/Makefile.global w]
+        puts $f {RM = rm -f
+MKDIR = mkdir -p
+INSTALL_DATA = cp
+INSTALL_SH = cp}
+        close $f
+        foreach name {Makefile dns-procs.tcl} {
+            file copy -force [file join $moduleRoot $name] [file join $directory $name]
+        }
+    } -body {
+        exec make -s -C $directory install-tcl NAVISERVER=prefix \
+            INSTTCL=install/tcl 2>@1
+        list [file exists $directory/install/tcl/nsdns/dns-procs.tcl] \
+            [file exists $directory/install/tcl/dns-procs.tcl] \
+            [file exists $directory/install/tcl/nsdns/dns_procs.tcl]
+    } -cleanup {
+        removeDirectory $directory
+    } -result {1 0 0}
+cleanupTests

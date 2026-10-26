@@ -429,3 +429,13 @@ to load the module normally. Build from its Git checkout for a useful tag.
 
 This project is licensed under the Mozilla Public License, v. 2.0.
 A copy of the [Mozilla Public License 2.0](https://mozilla.org/MPL/2.0/) is available online.
+
+## Lock diagnostics
+
+The module names its TCP, resolver, proxy, client-list and default-client locks
+at initialization. All 16 queue mutexes receive `nsdns:queue:<index>` names even
+when their queues have no worker thread. Per-client locks use the `nsdns:client`
+role; native lock IDs distinguish instances without placing client addresses in
+lock names. This affects diagnostic labels only, not synchronization or limits.
+A rebuilt module requires the usual server restart to replace the loaded native
+code; previously allocated lock IDs are not stable across starts.

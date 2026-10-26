@@ -148,18 +148,27 @@ NS_EXPORT Ns_ReturnCode Ns_ModuleInit(const char *server, const char *module)
     DnsdDebug = Ns_CreateLogSeverity("Debug(dnsd)");
 
     Ns_RWLockInit(&dnsClientLock);
+    Ns_RWLockSetName2(&dnsClientLock, "nsdns", "clients");
+    dnsInitMutex();
     //Tcl_InitHashTable(&dnsClientList, TCL_ONE_WORD_KEYS);
     Tcl_InitHashTable(&dnsClientList, TCL_STRING_KEYS);
     memset(&dnsClientDflt, 0, sizeof(dnsClient));
     strcpy(dnsClientDflt.ipaddr, "0.0.0.0");
     Ns_RWLockInit(&dnsClientDflt.lock);
+    Ns_RWLockSetName2(&dnsClientDflt.lock, "nsdns", "default-client");
     Tcl_InitHashTable(&dnsClientDflt.list, TCL_STRING_KEYS);
     memset(&dnsQueues, 0, sizeof(dnsQueues));
     Ns_MutexInit(&dnsTcpMutex);
+    Ns_MutexSetName2(&dnsTcpMutex, "nsdns", "tcp");
     Ns_MutexInit(&dnsProxyMutex);
+    Ns_MutexSetName2(&dnsProxyMutex, "nsdns", "proxy");
     Ns_CondInit(&dnsProxyCond);
     for (int i = 0; i < DNS_QUEUE_SIZE; i++) {
+        char lockName[32];
+
+        snprintf(lockName, sizeof(lockName), "nsdns:queue:%d", i);
         Ns_MutexInit(&dnsQueues[i].lock);
+        Ns_MutexSetName(&dnsQueues[i].lock, lockName);
         Ns_CondInit(&dnsQueues[i].cond);
     }
 
@@ -253,7 +262,6 @@ NS_EXPORT Ns_ReturnCode Ns_ModuleInit(const char *server, const char *module)
         /* Start listen thread */
         Ns_ThreadCreate(DnsQueueListenThread, 0, 0, 0);
     }
-    Ns_MutexSetName2(&dnsProxyMutex, "nsdns", "proxy");
     Ns_Log(Notice, "nsdns: version %s listening on [%s]:%d, (udp %d, tcp %d)",
            DNS_VERSION, (address != 0) ? address : "0.0.0.0", dnsPort,
            dnsUdpSock, dnsTcpSock);
@@ -911,7 +919,6 @@ static void DnsQueueRequestThread(void *arg)
     Ns_Log(Notice, "Starting thread: %s", buf);
     Ns_ThreadSetName("%s", buf);
 
-    Ns_MutexSetName(&queue->lock, buf);
     Ns_MutexLock(&queue->lock);
     while (1) {
         unsigned long rt, wt;
@@ -1882,6 +1889,7 @@ static dnsClient *DnsClientCreate(char *host)
         strcpy(client->ipaddr, ipString);
 
         Ns_RWLockInit(&client->lock);
+        Ns_RWLockSetName2(&client->lock, "nsdns", "client");
         Tcl_InitHashTable(&client->list, TCL_STRING_KEYS);
         Tcl_SetHashValue(entry, (ClientData) client);
     }

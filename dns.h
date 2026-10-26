@@ -221,6 +221,7 @@ void dnsPacketLog(dnsPacket *pkt, int level,const char *text, ...) NS_GNUC_PRINT
 void dnsPacketFree(dnsPacket *pkt, dnsType_t type);
 int dnsPacketAddRecord(dnsPacket *pkt,dnsRecord **list, uint16_t *count, dnsRecord *rec);
 int dnsPacketInsertRecord(dnsPacket * pkt, dnsRecord ** list, uint16_t *count, dnsRecord *rec);
+void dnsInitMutex(void);
 void dnsInit(const char *name,...);
 dnsPacket *dnsResolveTcp(dnsPacket *req, const char *server, unsigned short port, const Ns_Time *timeout);
 dnsPacket *dnsResolveAt(char *name, dnsType_t type, const char *server, unsigned short port, const Ns_Time *timeout, int retries);

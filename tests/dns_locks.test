@@ -1,0 +1,15 @@
+package require tcltest 2.2
+namespace import ::tcltest::*
+source [file join [file dirname [info script]] support.tcl]
+
+test dns-lock-names {TCP, resolver, proxy and all 16 queues are named before use, including inactive queues} -constraints nsdns -body {
+    set names {}
+    foreach lock [ns_info locks] {lappend names [lindex $lock 0]}
+    set out {}
+    foreach name {nsdns:tcp nsdns:resolver nsdns:proxy} {lappend out [expr {$name in $names}]}
+    set queues 0
+    for {set i 0} {$i<16} {incr i} {
+        if {"nsdns:queue:$i" in $names} {incr queues}
+    }
+    lappend out $queues
+} -result {1 1 1 16}

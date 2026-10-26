@@ -59,6 +59,12 @@ static struct {
    { NULL,    0 }
 };
 
+/* Name the lazily initialized resolver lock before serving any requests. */
+void dnsInitMutex(void)
+{
+    Ns_MutexSetName(&dnsMutex, "nsdns:resolver");
+}
+
 void dnsInit(const char *name, ...)
 {
     va_list ap;
